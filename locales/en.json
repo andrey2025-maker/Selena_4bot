@@ -1,0 +1,81 @@
+{
+    "start": {
+        "welcome": "🇺🇸🍽️ Welcome to the Build a Zoo bot for sending notifications about Stock and Totems!",
+        "choose_language": "🇺🇸🗯️Select the language in which you will receive notifications:"
+    },
+    "subscription": {
+        "require": "To receive notifications, subscribe to the group:\n👉 @buildazoo_chat\nAfter subscribing, click the button:",
+        "check_button": "🔍 Check subscription",
+        "not_subscribed": "❌ You are not subscribed to the group yet.\nSubscribe and click the button again.\n👉 @buildazoo_chat",
+        "confirmed": "✅ Subscription confirmed!\nNow configure which notifications you want to receive:\n\n🥝 Food - select fruits for which you want to receive notifications\n🗿 Free - Notifications about free totems\n🗿💎 Paid - Notifications about paid totems (payment is usually specified in the text with a link to the totem, and it indicates who to send it to; most often it's a person near the food shop. If you're slow and don't send it in time, the person might block you)\n\nBy writing these words, you can select the desired fruits again: \"Food, Stock, Eat, Totems, Totem\"\nBy writing \"Disable, Off\" you will disable all notifications."
+    },
+    "settings": {
+        "title": "⚙️ Notification settings:\nNow configure which notifications you want to receive:\n\n🥝 Food - select fruits for which you want to receive notifications\n🗿 Free - Notifications about free totems\n🗿💎 Paid - Notifications about paid totems (payment is usually specified in the text with a link to the totem, and it indicates who to send it to; most often it's a person near the food shop. If you're slow and don't send it in time, the person might block you)\n\nBy writing these words, you can select the desired fruits again: \"Food, Stock, Eat, Totems, Totem\"\nBy writing \"Disable, Off\" you will disable all notifications.",
+        "food_button": "🥝 Food (fruit selection)",
+        "free_totems_button": "🗿 Free totems",
+        "paid_totems_button": "💎 Paid totems",
+        "back_button": "🔙 Back",
+        "food_selection": "Select fruits (multiple choice possible):",
+        "select_all": "📦 Receive all",
+        "save_button": "💾 Save",
+        "saved": "✅ Settings saved!\nYou will receive:\n{fruits}",
+        "no_fruits_selected": "ℹ️ You haven't selected any fruits. Food notifications will not be sent.",
+        "totem_toggle_on": "✅ ON",
+        "totem_toggle_off": "❌ OFF"
+    },
+    "notifications": {
+        "food_title": "🍽️ New food in stock!",
+        "free_totem_title": "🗿 Free totem",
+        "paid_totem_title": "💎 Paid totem",
+        "stock_prefix": "stock",
+        "unsubscribed": "❌ You have unsubscribed from the required group. Notifications suspended.\nSubscribe again and click 'Check subscription'."
+    },
+    "admin": {
+        "stats": "📊 Bot statistics:\n👥 Total users: {total_users}\n✅ Active subscribers: {active_subscribers}\n\n🍎 Fruit popularity:\n{fruit_stats}\n\n🗿 Free totems: {free_totems}\n💎 Paid totems: {paid_totems}",
+        "broadcast_started": "📢 Broadcast started for {count} users...",
+        "broadcast_completed": "✅ Broadcast completed! Sent {success} out of {total} messages.",
+        "access_denied": "⛔ You don't have administrator rights."
+    },
+    "trade": {
+        "enter_own_nick": "🎮 Enter your Roblox nickname (e.g. @MyNick or just MyNick):",
+        "nick_saved_enter_partner": "✅ Nickname saved: <b>@{nick}</b>\n\nSpecify the second trade participant:\n• Forward any message from them\n• Or enter their @username / Telegram ID",
+        "enter_partner": "🎮 Your Roblox nickname: <b>@{nick}</b>\n\nSpecify the second trade participant:\n• Forward any message from them\n• Or enter their @username / Telegram ID",
+        "partner_not_found": "❌ User not found or has never started the bot.\n\nShare this link: {link}",
+        "partner_no_nick": "⏳ The second participant hasn't set their Roblox nickname yet. They have been notified — the trade will start automatically once they enter it.",
+        "trade_started": "🔄 <b>Trade started!</b>\n\nSend messages — they will be forwarded to the other participant.\n⏳ An administrator will join shortly.",
+        "admin_joined": "👑 An administrator has joined the conversation.",
+        "trade_ended": "✅ Trade completed. Messages are no longer being forwarded.",
+        "not_in_trade": "❌ You have no active trade.",
+        "enter_nick_for_trade": "⚠️ You have been invited to a trade! First, enter your Roblox nickname (e.g. @MyNick):"
+    },
+    "inventory": {
+        "empty": "🎒 Your inventory is empty.",
+        "title": "🎒 <b>Inventory:</b>",
+        "pickup_sent": "✅ Pickup request sent to the administrator.",
+        "pickup_request_title": "📦 <b>Item pickup request</b>",
+        "add_pet_prompt": "📸 Send photos of your pets to add them to your inventory.",
+        "add_pet_received": "✅ Photos received! An administrator will contact you."
+    },
+    "keyboard_refresh": {
+        "updated": "🔄 Keyboard updated"
+    },
+    "fruits": {
+        "Pear": "Pear",
+        "Pineapple": "Pineapple",
+        "Gold Mango": "Gold Mango",
+        "Dragon Fruit": "Dragon Fruit",
+        "Bloodstone Cycad": "Bloodstone Cycad",
+        "Colossal Pinecone": "Colossal Pinecone",
+        "Franken Kiwi": "Franken Kiwi",
+        "Pumpkin": "Pumpkin",
+        "Durian": "Durian",
+        "Candy Corn": "Candy Corn",
+        "Deepsea Pearl Fruit": "Deepsea Pearl Fruit",
+        "Volt Ginkgo": "Volt Ginkgo",
+        "Cranberry": "Cranberry",
+        "Acorn": "Acorn",
+        "Gingerbread": "Gingerbread",
+        "Candycane": "Candycane",
+        "Cherry": "Cherry"
+    }
+}
