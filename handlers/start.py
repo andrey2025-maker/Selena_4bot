@@ -63,7 +63,10 @@ async def set_language(callback: CallbackQuery):
     logger.info(f"Пользователь {user_id} выбрал язык: {lang}")
     
     # Удаляем сообщение с выбором языка
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     
     # Проверяем подписку
     is_subscribed = await check_user_subscription(
@@ -149,7 +152,7 @@ async def show_settings_menu(message: Message, user_id: int, lang: str, lang_cod
     fruits_text = ""
     if user_fruits:
         if "all" in user_fruits:
-            fruits_text = "📦 Все фрукты" if lang_code == "ru" else "📦 All fruits"
+            fruits_text = locale_manager.get_text(lang_code, "settings.all_fruits")
         else:
             fruit_names = []
             for fruit in user_fruits:
@@ -164,8 +167,8 @@ async def show_settings_menu(message: Message, user_id: int, lang: str, lang_cod
 
     settings_text = locale_manager.get_text(lang_code, "settings.title")
     settings_text += (
-        f"\n\n📋 <b>{'Текущие настройки' if lang_code == 'ru' else 'Current settings'}:</b>\n"
-        f"🥝 {'Фрукты' if lang_code == 'ru' else 'Fruits'}: {fruits_text}\n"
+        f"\n\n{locale_manager.get_text(lang_code, 'settings.current_header')}\n"
+        f"{locale_manager.get_text(lang_code, 'settings.fruits_label')}: {fruits_text}\n"
         f"🗿 Free: {free_status}\n💎 Paid: {paid_status}"
     )
 
@@ -173,11 +176,7 @@ async def show_settings_menu(message: Message, user_id: int, lang: str, lang_cod
 
     if send_reply_keyboard:
         # При первом входе — приветствие обновляет reply-клавиатуру
-        welcome = (
-            "👋 <b>Добро пожаловать!</b> Выберите нужный раздел с помощью кнопок ниже."
-            if lang_code == "ru" else
-            "👋 <b>Welcome!</b> Use the buttons below to navigate."
-        )
+        welcome = locale_manager.get_text(lang_code, "start.welcome_menu")
         await message.answer(welcome, parse_mode="HTML", reply_markup=get_main_keyboard(lang))
 
     # Одно сообщение с текстом настроек + инлайн-кнопками (как «Уведомления»)
@@ -227,7 +226,7 @@ async def show_notifications_menu(message: Message):
     fruits_text = ""
     if user_fruits:
         if "all" in user_fruits:
-            fruits_text = "📦 Все фрукты"
+            fruits_text = locale_manager.get_text(lang_code, "settings.all_fruits")
         else:
             fruit_names = []
             for fruit in user_fruits:
@@ -236,12 +235,16 @@ async def show_notifications_menu(message: Message):
             fruits_text = ", ".join(fruit_names)
     else:
         fruits_text = locale_manager.get_text(lang_code, "settings.no_fruits_selected")
-    
+
     free_status = "✅" if user.get("free_totems", 1) else "❌"
     paid_status = "✅" if user.get("paid_totems", 1) else "❌"
-    
+
     settings_text = locale_manager.get_text(lang_code, "settings.title")
-    settings_text += f"\n\n📋 <b>Текущие настройки:</b>\n🥝 Фрукты: {fruits_text}\n🗿 Free: {free_status}\n💎 Paid: {paid_status}"
+    settings_text += (
+        f"\n\n{locale_manager.get_text(lang_code, 'settings.current_header')}\n"
+        f"{locale_manager.get_text(lang_code, 'settings.fruits_label')}: {fruits_text}\n"
+        f"🗿 Free: {free_status}\n💎 Paid: {paid_status}"
+    )
     
     from handlers.settings import get_settings_keyboard
     
@@ -264,10 +267,8 @@ async def disable_notifications(message: Message):
     db.update_user_fruits(user_id, [])
     db.update_totem_settings(user_id, free_totems=False, paid_totems=False)
     
-    if lang == "RUS":
-        text = "✅ Все уведомления отключены!\nЧтобы снова включить, нажмите «🔔 Уведомления»"
-    else:
-        text = "✅ All notifications disabled!\nTo enable again, click «🔔 Notifications»"
+    lc = "ru" if lang == "RUS" else "en"
+    text = locale_manager.get_text(lc, "settings.notifications_disabled")
     
     await message.answer(
         text,
@@ -334,19 +335,35 @@ async def show_help(message: Message):
 
 @router.message(Command("кнопки", "buttons"), F.chat.type == "private")
 async def cmd_refresh_keyboard(message: Message):
-    """Обновление reply-клавиатуры для пользователя"""
-    if message.chat.type != "private":
-        return
-    user_id = message.from_user.id
-    lang = await get_user_language(user_id)
-    lang_code = "ru" if lang == "RUS" else "en"
+    """Рассылка обновлённой клавиатуры всем пользователям (только для админов)"""
+    from handlers.admin_common import is_admin
 
-    text = (
-        "✅ Клавиатура обновлена!"
-        if lang_code == "ru" else
-        "✅ Keyboard updated!"
+    user_id = message.from_user.id
+
+    if not is_admin(user_id):
+        await message.answer("⛔ У вас нет прав для этой команды.")
+        return
+
+    await message.answer("⏳ Рассылаю обновлённую клавиатуру всем пользователям...")
+
+    users = db.get_all_users()
+    sent = 0
+    failed = 0
+
+    for user in users:
+        uid = user["user_id"]
+        lang = user.get("language", "RUS")
+        lang_code = "ru" if lang == "RUS" else "en"
+        text = "✅ Клавиатура обновлена!" if lang_code == "ru" else "✅ Keyboard updated!"
+        try:
+            await message.bot.send_message(uid, text, reply_markup=get_main_keyboard(lang))
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await message.answer(
+        f"✅ Готово! Отправлено: {sent}, не доставлено: {failed} (заблокировали бота)."
     )
-    await message.answer(text, reply_markup=get_main_keyboard(lang))
 
 
 @router.message(Command("language"), F.chat.type == "private")
@@ -360,6 +377,6 @@ async def cmd_language(message: Message):
     ])
     
     await message.answer(
-        "🇷🇺 Выберите язык:\n🇺🇸 Choose language:",
+        locale_manager.get_text("ru", "start.choose_language_change"),
         reply_markup=language_keyboard
     )

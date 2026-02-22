@@ -5,6 +5,7 @@ handlers/trade.py - Система обмена предметами через 
 Администратор может завершить обмен командой /stop в теме.
 """
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -20,6 +21,7 @@ from aiogram.fsm.state import State, StatesGroup
 from database import Database
 from config import Config
 from utils.log_events import log_trade_session_start, log_trade_session_stop
+from utils.messages import locale_manager
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -140,24 +142,13 @@ async def _start_trade_dialog(bot: Bot, session_id: int, user1_id: int, user2_id
     await state2.set_state(TradeStates.in_trade)
     await state2.update_data(**trade_data2)
 
-    start_text_ru = (
-        "🔄 <b>Обмен начат!</b>\n\n"
-        "Пишите сообщения — они будут переданы второму участнику.\n"
-        "⏳ Скоро подключится администратор."
-    )
-    start_text_en = (
-        "🔄 <b>Trade started!</b>\n\n"
-        "Send messages — they will be forwarded to the other participant.\n"
-        "⏳ An administrator will join shortly."
-    )
-
     user1_data = db.get_user(user1_id)
     user2_data = db.get_user(user2_id)
     lang1 = (user1_data or {}).get("language", "RUS")
     lang2 = (user2_data or {}).get("language", "RUS")
 
-    await bot.send_message(user1_id, start_text_ru if lang1 == "RUS" else start_text_en)
-    await bot.send_message(user2_id, start_text_ru if lang2 == "RUS" else start_text_en)
+    await bot.send_message(user1_id, locale_manager.get_text("ru" if lang1 == "RUS" else "en", "trade.trade_started"), parse_mode="HTML")
+    await bot.send_message(user2_id, locale_manager.get_text("ru" if lang2 == "RUS" else "en", "trade.trade_started"), parse_mode="HTML")
 
     await _notify_admins(
         bot,
@@ -176,36 +167,13 @@ async def _trade_start_flow(user_id: int, reply_target, state: FSMContext, bot: 
     user_data = db.get_user(user_id)
     lang = (user_data or {}).get("language", "RUS")
 
+    lc = "ru" if lang == "RUS" else "en"
     if existing_nick:
-        if lang == "RUS":
-            text = (
-                f"🎮 Ваш Roblox-ник: <b>@{existing_nick}</b>\n\n"
-                "Укажите второго участника обмена:\n"
-                "• Перешлите любое его сообщение\n"
-                "• Или введите его @username / Telegram ID\n\n"
-                "Для отмены: /cancel"
-            )
-        else:
-            text = (
-                f"🎮 Your Roblox nickname: <b>@{existing_nick}</b>\n\n"
-                "Specify the second trade participant:\n"
-                "• Forward any message from them\n"
-                "• Or enter their @username / Telegram ID\n\n"
-                "To cancel: /cancel"
-            )
+        text = locale_manager.get_text(lc, "trade.enter_partner").format(nick=existing_nick)
         await state.set_state(TradeStates.waiting_for_partner)
         await state.update_data(my_nick=existing_nick)
     else:
-        if lang == "RUS":
-            text = (
-                "🎮 Введите ваш Roblox-ник (например: @MyNick или просто MyNick):\n\n"
-                "Для отмены: /cancel"
-            )
-        else:
-            text = (
-                "🎮 Enter your Roblox nickname (e.g. @MyNick or just MyNick):\n\n"
-                "To cancel: /cancel"
-            )
+        text = locale_manager.get_text(lc, "trade.enter_own_nick_cancel")
         await state.set_state(TradeStates.waiting_for_own_nick)
         await state.update_data(trade_flow=True)
 
@@ -232,45 +200,32 @@ async def trade_receive_own_nick(message: Message, state: FSMContext, bot: Bot):
     user_data = db.get_user(user_id)
     lang = (user_data or {}).get("language", "RUS")
 
+    lc = "ru" if lang == "RUS" else "en"
+
     if message.text and message.text.strip() == "/cancel":
         await state.clear()
-        await message.answer("🚫 Обмен отменён." if lang == "RUS" else "🚫 Trade cancelled.")
+        await message.answer(locale_manager.get_text(lc, "trade.cancelled"))
         return
 
     nick = message.text.strip().lstrip("@") if message.text else ""
 
     if not nick:
-        await message.answer("❌ Пожалуйста, введите ник текстом.")
+        await message.answer(locale_manager.get_text(lc, "trade.enter_nick_text_only"))
         return
 
     db.set_roblox_nick(user_id, nick)
     data = await state.get_data()
     user_data = db.get_user(user_id)
     lang = (user_data or {}).get("language", "RUS")
+    lc = "ru" if lang == "RUS" else "en"
 
     if data.get("trade_flow"):
-        if lang == "RUS":
-            text = (
-                f"✅ Ник сохранён: <b>@{nick}</b>\n\n"
-                "Укажите второго участника обмена:\n"
-                "• Перешлите любое его сообщение\n"
-                "• Или введите его @username / Telegram ID"
-            )
-        else:
-            text = (
-                f"✅ Nickname saved: <b>@{nick}</b>\n\n"
-                "Specify the second trade participant:\n"
-                "• Forward any message from them\n"
-                "• Or enter their @username / Telegram ID"
-            )
+        text = locale_manager.get_text(lc, "trade.nick_saved_enter_partner").format(nick=nick)
         await state.set_state(TradeStates.waiting_for_partner)
         await state.update_data(my_nick=nick)
-        await message.answer(text)
+        await message.answer(text, parse_mode="HTML")
     else:
-        if lang == "RUS":
-            await message.answer(f"✅ Roblox-ник сохранён: <b>@{nick}</b>")
-        else:
-            await message.answer(f"✅ Roblox nickname saved: <b>@{nick}</b>")
+        await message.answer(locale_manager.get_text(lc, "trade.nick_saved").format(nick=nick), parse_mode="HTML")
         await state.clear()
 
 
@@ -281,10 +236,12 @@ async def trade_receive_partner(message: Message, state: FSMContext, bot: Bot):
     user_data = db.get_user(user_id)
     lang = (user_data or {}).get("language", "RUS")
 
+    lc = "ru" if lang == "RUS" else "en"
+
     # /cancel — отмена
     if message.text and message.text.strip() == "/cancel":
         await state.clear()
-        await message.answer("🚫 Обмен отменён." if lang == "RUS" else "🚫 Trade cancelled.")
+        await message.answer(locale_manager.get_text(lc, "trade.cancelled"))
         return
 
     partner_id: Optional[int] = None
@@ -310,18 +267,9 @@ async def trade_receive_partner(message: Message, state: FSMContext, bot: Bot):
                     partner_id = u["user_id"]
                     break
             if not partner_id:
-                if lang == "RUS":
-                    await message.answer(
-                        f"❌ Пользователь @{text.lstrip('@')} не найден.\n"
-                        "Убедитесь, что он хотя бы раз запускал бота.\n\n"
-                        "Попробуйте переслать его сообщение или ввести Telegram ID."
-                    )
-                else:
-                    await message.answer(
-                        f"❌ User @{text.lstrip('@')} not found.\n"
-                        "Make sure they have started the bot at least once.\n\n"
-                        "Try forwarding their message or entering their Telegram ID."
-                    )
+                await message.answer(
+                    locale_manager.get_text(lc, "trade.partner_not_found_username").format(username=text.lstrip('@'))
+                )
                 return
         else:
             try:
@@ -330,54 +278,21 @@ async def trade_receive_partner(message: Message, state: FSMContext, bot: Bot):
                 partner_id = None
 
     if not partner_id:
-        # Пересланное сообщение от пользователя со скрытыми настройками
         if message.forward_origin:
-            if lang == "RUS":
-                await message.answer(
-                    "❌ Не удалось определить пользователя — он скрыл информацию о пересылках.\n\n"
-                    "Попросите его прислать вам свой @username или Telegram ID и введите его вручную."
-                )
-            else:
-                await message.answer(
-                    "❌ Could not identify the user — they have hidden their forwarding info.\n\n"
-                    "Ask them to send you their @username or Telegram ID and enter it manually."
-                )
+            await message.answer(locale_manager.get_text(lc, "trade.user_hidden_forwarding"))
         else:
-            if lang == "RUS":
-                await message.answer(
-                    "❌ Не удалось определить пользователя.\n"
-                    "Перешлите его сообщение или введите @username / Telegram ID."
-                )
-            else:
-                await message.answer(
-                    "❌ Could not identify the user.\n"
-                    "Forward their message or enter @username / Telegram ID."
-                )
+            await message.answer(locale_manager.get_text(lc, "trade.user_not_identified"))
         return
 
     if partner_id == user_id:
-        if lang == "RUS":
-            await message.answer("❌ Нельзя начать обмен с самим собой.")
-        else:
-            await message.answer("❌ You cannot trade with yourself.")
+        await message.answer(locale_manager.get_text(lc, "trade.cannot_trade_self"))
         return
 
     partner_data = db.get_user(partner_id)
     if not partner_data:
-        if lang == "RUS":
-            bot_info = await bot.get_me()
-            invite_link = f"https://t.me/{bot_info.username}"
-            await message.answer(
-                "❌ Этот пользователь ещё не зарегистрирован в боте.\n\n"
-                f"Отправьте ему эту ссылку для регистрации: {invite_link}"
-            )
-        else:
-            bot_info = await bot.get_me()
-            invite_link = f"https://t.me/{bot_info.username}"
-            await message.answer(
-                "❌ This user is not registered in the bot yet.\n\n"
-                f"Send them this link to register: {invite_link}"
-            )
+        bot_info = await bot.get_me()
+        invite_link = f"https://t.me/{bot_info.username}"
+        await message.answer(locale_manager.get_text(lc, "trade.user_not_registered").format(link=invite_link))
         await state.clear()
         return
 
@@ -388,16 +303,10 @@ async def trade_receive_partner(message: Message, state: FSMContext, bot: Bot):
     if not partner_nick:
         partner_lang = partner_data.get("language", "RUS")
 
-        if partner_lang == "RUS":
-            notify_text = (
-                f"🔄 Пользователь {_user_link(user_id, f'@{my_nick}')} предлагает вам обмен!\n\n"
-                "Для начала укажите ваш Roblox-ник (например: @MyNick или просто MyNick):"
-            )
-        else:
-            notify_text = (
-                f"🔄 User {_user_link(user_id, f'@{my_nick}')} wants to trade with you!\n\n"
-                "Please enter your Roblox nickname first (e.g. @MyNick or just MyNick):"
-            )
+        partner_lc = "ru" if partner_lang == "RUS" else "en"
+        notify_text = locale_manager.get_text(partner_lc, "trade.partner_needs_nick").format(
+            link=_user_link(user_id, f'@{my_nick}')
+        )
 
         from aiogram.fsm.storage.base import StorageKey
         bot_id = (await bot.get_me()).id
@@ -422,16 +331,7 @@ async def trade_receive_partner(message: Message, state: FSMContext, bot: Bot):
 
         await state.clear()
 
-        if lang == "RUS":
-            await message.answer(
-                "✅ Запрос отправлен пользователю.\n"
-                "Ожидаем, пока он укажет свой Roblox-ник — после этого обмен начнётся автоматически."
-            )
-        else:
-            await message.answer(
-                "✅ Request sent to the user.\n"
-                "Waiting for them to enter their Roblox nickname — the trade will start automatically."
-            )
+        await message.answer(locale_manager.get_text(lc, "trade.request_sent_waiting_nick"))
         return
 
     await _launch_trade(bot, message, state, user_id, partner_id, my_nick, partner_nick)
@@ -447,25 +347,12 @@ async def _launch_trade(bot: Bot, message: Message, state: FSMContext,
     user1_data = db.get_user(user1_id)
     initiator_lang = (user1_data or {}).get("language", "RUS")
 
-    # Кнопки подтверждения для второго участника
-    if partner_lang == "RUS":
-        confirm_text = (
-            f"🔄 <b>Запрос на обмен</b>\n\n"
-            f"Пользователь {_user_link(user1_id, nick1)} (Roblox: <b>{nick1}</b>) "
-            f"хочет начать с вами обмен.\n\n"
-            f"Принять?"
-        )
-        yes_btn = "✅ Да"
-        no_btn = "❌ Нет"
-    else:
-        confirm_text = (
-            f"🔄 <b>Trade request</b>\n\n"
-            f"User {_user_link(user1_id, nick1)} (Roblox: <b>{nick1}</b>) "
-            f"wants to start a trade with you.\n\n"
-            f"Accept?"
-        )
-        yes_btn = "✅ Yes"
-        no_btn = "❌ No"
+    partner_lc = "ru" if partner_lang == "RUS" else "en"
+    confirm_text = locale_manager.get_text(partner_lc, "trade.confirm_request").format(
+        link=_user_link(user1_id, nick1), nick=nick1
+    )
+    yes_btn = "✅ Да" if partner_lang == "RUS" else "✅ Yes"
+    no_btn = "❌ Нет" if partner_lang == "RUS" else "❌ No"
 
     confirm_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=yes_btn, callback_data=f"trade_confirm_yes_{user1_id}_{user2_id}"),
@@ -495,28 +382,19 @@ async def _launch_trade(bot: Bot, message: Message, state: FSMContext,
             try:
                 user2_data = db.get_user(user2_id)
                 lang2 = (user2_data or {}).get("language", "RUS")
-                if lang2 == "RUS":
-                    await bot.send_message(user2_id, "⏰ Время ожидания подтверждения обмена истекло.")
-                else:
-                    await bot.send_message(user2_id, "⏰ Trade confirmation timed out.")
+                lc2 = "ru" if lang2 == "RUS" else "en"
+                await bot.send_message(user2_id, locale_manager.get_text(lc2, "trade.confirmation_timeout"))
             except Exception:
                 pass
     asyncio.create_task(_confirmation_timeout())
 
     # Сообщаем инициатору что запрос отправлен
     await state.clear()
-    if initiator_lang == "RUS":
-        await message.answer(
-            f"✅ Запрос на обмен отправлен пользователю {_roblox_link(nick2)}.\n"
-            "Ожидаем подтверждения...",
-            parse_mode="HTML",
-        )
-    else:
-        await message.answer(
-            f"✅ Trade request sent to {_roblox_link(nick2)}.\n"
-            "Waiting for confirmation...",
-            parse_mode="HTML",
-        )
+    init_lc = "ru" if initiator_lang == "RUS" else "en"
+    await message.answer(
+        locale_manager.get_text(init_lc, "trade.request_sent_waiting_confirm").format(link=_roblox_link(nick2)),
+        parse_mode="HTML",
+    )
 
 
 async def _do_start_trade(bot: Bot, storage, bot_id: int,
@@ -565,10 +443,8 @@ async def trade_confirm_yes(callback: CallbackQuery, state: FSMContext, bot: Bot
 
     user2_data = db.get_user(user2_id)
     lang2 = (user2_data or {}).get("language", "RUS")
-    if lang2 == "RUS":
-        await callback.message.answer("✅ Вы приняли обмен! Начинаем...")
-    else:
-        await callback.message.answer("✅ You accepted the trade! Starting...")
+    lc2 = "ru" if lang2 == "RUS" else "en"
+    await callback.message.answer(locale_manager.get_text(lc2, "trade.accepted"))
 
     bot_id = (await bot.get_me()).id
     await _do_start_trade(bot, state.storage, bot_id,
@@ -600,23 +476,19 @@ async def trade_confirm_no(callback: CallbackQuery, state: FSMContext, bot: Bot)
 
     user2_data = db.get_user(user2_id)
     lang2 = (user2_data or {}).get("language", "RUS")
-    if lang2 == "RUS":
-        await callback.message.answer("❌ Вы отклонили запрос на обмен.")
-    else:
-        await callback.message.answer("❌ You declined the trade request.")
+    lc2 = "ru" if lang2 == "RUS" else "en"
+    await callback.message.answer(locale_manager.get_text(lc2, "trade.declined_by_you"))
 
     # Уведомляем инициатора
     user1_data = db.get_user(user1_id)
     lang1 = (user1_data or {}).get("language", "RUS")
+    lc1 = "ru" if lang1 == "RUS" else "en"
     try:
-        if lang1 == "RUS":
-            await bot.send_message(user1_id,
-                f"❌ Пользователь {_roblox_link(nick1)} отклонил ваш запрос на обмен.",
-                parse_mode="HTML")
-        else:
-            await bot.send_message(user1_id,
-                f"❌ User {_roblox_link(nick1)} declined your trade request.",
-                parse_mode="HTML")
+        await bot.send_message(
+            user1_id,
+            locale_manager.get_text(lc1, "trade.declined_by_partner").format(link=_roblox_link(nick1)),
+            parse_mode="HTML"
+        )
     except Exception as e:
         logger.warning(f"Cannot notify initiator {user1_id} about declined trade: {e}")
 
@@ -629,8 +501,12 @@ async def trade_partner_enters_nick(message: Message, state: FSMContext, bot: Bo
     user_id = message.from_user.id
     nick = message.text.strip().lstrip("@") if message.text else ""
 
+    user_data = db.get_user(user_id)
+    lang = (user_data or {}).get("language", "RUS")
+    lc = "ru" if lang == "RUS" else "en"
+
     if not nick:
-        await message.answer("❌ Пожалуйста, введите ник текстом.")
+        await message.answer(locale_manager.get_text(lc, "trade.enter_nick_text_only"))
         return
 
     db.set_roblox_nick(user_id, nick)
@@ -639,16 +515,11 @@ async def trade_partner_enters_nick(message: Message, state: FSMContext, bot: Bo
     initiator_nick = data.get("initiator_nick")
 
     if not initiator_id or not initiator_nick:
-        await message.answer("❌ Данные обмена устарели. Попробуйте снова.")
+        await message.answer(locale_manager.get_text(lc, "trade.trade_data_expired"))
         await state.clear()
         return
 
-    user_data = db.get_user(user_id)
-    lang = (user_data or {}).get("language", "RUS")
-    if lang == "RUS":
-        await message.answer(f"✅ Ник сохранён: <b>@{nick}</b>")
-    else:
-        await message.answer(f"✅ Nickname saved: <b>@{nick}</b>")
+    await message.answer(locale_manager.get_text(lc, "trade.nick_saved_short").format(nick=nick), parse_mode="HTML")
 
     # Теперь запускаем флоу с подтверждением (инициатор = initiator_id, партнёр = user_id)
     await _launch_trade(bot, message, state, initiator_id, user_id, initiator_nick, nick)
@@ -663,10 +534,8 @@ async def user_stop_trade(message: Message, state: FSMContext, bot: Bot):
     if current != TradeStates.in_trade:
         user_data = db.get_user(user_id)
         lang = (user_data or {}).get("language", "RUS")
-        if lang == "RUS":
-            await message.answer("❌ У вас нет активного обмена.")
-        else:
-            await message.answer("❌ You have no active trade.")
+        lc = "ru" if lang == "RUS" else "en"
+        await message.answer(locale_manager.get_text(lc, "trade.no_active_trade"))
         return
 
     data = await state.get_data()
@@ -676,6 +545,7 @@ async def user_stop_trade(message: Message, state: FSMContext, bot: Bot):
 
     user_data = db.get_user(user_id)
     lang = (user_data or {}).get("language", "RUS")
+    lc = "ru" if lang == "RUS" else "en"
 
     # Завершаем сессию в БД
     if session_id:
@@ -684,19 +554,14 @@ async def user_stop_trade(message: Message, state: FSMContext, bot: Bot):
     # Очищаем состояние инициатора
     await state.clear()
 
-    if lang == "RUS":
-        await message.answer("✅ Вы завершили обмен.")
-    else:
-        await message.answer("✅ You have ended the trade.")
+    await message.answer(locale_manager.get_text(lc, "trade.you_ended"))
 
     # Уведомляем партнёра
     if partner_id:
         partner_data = db.get_user(partner_id)
         partner_lang = (partner_data or {}).get("language", "RUS")
-        if partner_lang == "RUS":
-            end_text = "❌ Второй участник завершил обмен."
-        else:
-            end_text = "❌ The other participant has ended the trade."
+        partner_lc = "ru" if partner_lang == "RUS" else "en"
+        end_text = locale_manager.get_text(partner_lc, "trade.partner_ended")
         try:
             await bot.send_message(partner_id, end_text)
         except Exception as e:
@@ -742,7 +607,9 @@ async def trade_message_handler(message: Message, state: FSMContext, bot: Bot):
     session_id = data.get("session_id")
 
     if not partner_id or not session_id:
-        await message.answer("❌ Сессия обмена не найдена.")
+        user_data_tmp = db.get_user(user_id)
+        lc_tmp = "ru" if (user_data_tmp or {}).get("language", "RUS") == "RUS" else "en"
+        await message.answer(locale_manager.get_text(lc_tmp, "trade.session_not_found"))
         await state.clear()
         return
 
@@ -750,10 +617,8 @@ async def trade_message_handler(message: Message, state: FSMContext, bot: Bot):
     if not session or session["status"] != "active":
         user_data = db.get_user(user_id)
         lang = (user_data or {}).get("language", "RUS")
-        if lang == "RUS":
-            await message.answer("❌ Обмен завершён.")
-        else:
-            await message.answer("❌ Trade has ended.")
+        lc = "ru" if lang == "RUS" else "en"
+        await message.answer(locale_manager.get_text(lc, "trade.session_ended"))
         await state.clear()
         return
 
@@ -862,10 +727,8 @@ async def admin_stop_trade(message: Message, bot: Bot, state: FSMContext):
     for uid in [user1_id, user2_id]:
         user_data = db.get_user(uid)
         lang = (user_data or {}).get("language", "RUS")
-        if lang == "RUS":
-            end_text = "✅ <b>Обмен завершён.</b>\nСпасибо за использование сервиса!"
-        else:
-            end_text = "✅ <b>Trade completed.</b>\nThank you for using the service!"
+        lc_uid = "ru" if lang == "RUS" else "en"
+        end_text = locale_manager.get_text(lc_uid, "trade.completed_by_admin")
         try:
             await bot.send_message(uid, end_text)
         except Exception as e:
@@ -911,10 +774,8 @@ async def admin_trade_message(message: Message, bot: Bot):
         for uid in [user1_id, user2_id]:
             user_data = db.get_user(uid)
             lang = (user_data or {}).get("language", "RUS")
-            if lang == "RUS":
-                joined_text = "👨‍💼 <b>Администратор подключился к диалогу.</b>"
-            else:
-                joined_text = "👨‍💼 <b>An administrator has joined the conversation.</b>"
+            lc_uid = "ru" if lang == "RUS" else "en"
+            joined_text = locale_manager.get_text(lc_uid, "trade.admin_joined_dialog")
             try:
                 await bot.send_message(uid, joined_text)
             except Exception as e:

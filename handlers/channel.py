@@ -185,7 +185,7 @@ async def process_totem_notification(totem_type: str, text: str, link: str, bot:
         message_text = MessageFilter.format_totem_message(totem_type, text, link, lang)
         
         # Создаем задачу для отправки
-        task = send_with_semaphore(bot, user_id, message_text, "Markdown", semaphore)
+        task = send_with_semaphore(bot, user_id, message_text, "HTML", semaphore)
         tasks.append(task)
     
     # Выполняем все задачи параллельно с ограничением
@@ -302,20 +302,11 @@ async def channel_status_command(message: Message, bot: Bot):
 
 # ========== ИГНОРИРОВАНИЕ КОМАНД В ГРУППАХ ==========
 
-@router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
+@router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}), F.text.startswith("/"))
 async def ignore_commands_in_groups(message: Message):
     """
-    Игнорировать команды бота в группах.
+    Игнорировать команды бота в группах (кроме группы обменов).
     Команды работают только в личных сообщениях.
     """
-    if not message.text:
-        return
-    
-    text = message.text.strip()
-    
-    # Проверяем только команды, начинающиеся с /
-    if text.startswith('/'):
-        # Это команда, но мы игнорируем ее в группах
-        # Можно добавить логирование или просто ничего не делать
-        logger.debug(f"Игнорируем команду в группе: {text} от {message.from_user.id}")
-        return
+    logger.debug(f"Игнорируем команду в группе: {message.text} от {message.from_user.id}")
+    return

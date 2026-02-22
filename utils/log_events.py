@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 from aiogram import Bot
+from aiogram.types import LinkPreviewOptions
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ async def send_log(bot: Bot, text: str) -> None:
             Config.LOG_GROUP_ID,
             text,
             parse_mode="HTML",
-            disable_web_page_preview=True,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
     except Exception as e:
         logger.warning(f"[log_events] Не удалось отправить лог: {e}")

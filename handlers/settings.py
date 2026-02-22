@@ -174,7 +174,7 @@ async def select_fruits(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-@router.callback_query(F.data.startswith("fruit_"))
+@router.callback_query(F.data.startswith("fruit_"), FruitSelection.waiting_for_fruits)
 async def toggle_fruit(callback: CallbackQuery, state: FSMContext):
     """Выбор/отмена выбора фрукта"""
     fruit_en = callback.data.replace("fruit_", "")
@@ -204,7 +204,7 @@ async def toggle_fruit(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-@router.callback_query(F.data == "select_all_fruits")
+@router.callback_query(F.data == "select_all_fruits", FruitSelection.waiting_for_fruits)
 async def select_all_fruits(callback: CallbackQuery, state: FSMContext):
     """Выбрать все фрукты"""
     user_id = callback.from_user.id

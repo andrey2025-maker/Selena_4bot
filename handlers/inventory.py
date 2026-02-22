@@ -21,6 +21,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from database import Database
+from utils.messages import locale_manager
 from config import Config
 from utils.keyboards import get_main_keyboard
 from utils.log_events import (
@@ -515,7 +516,8 @@ async def start_pickup_selection(callback: CallbackQuery, state: FSMContext):
 
     items = db.get_user_inventory(user_id)
     if not items:
-        await callback.answer("Инвентарь пуст" if lang == "RUS" else "Inventory is empty", show_alert=True)
+        lc = "ru" if lang == "RUS" else "en"
+        await callback.answer(locale_manager.get_text(lc, "inventory.empty_alert"), show_alert=True)
         return
 
     await state.set_state(InventoryStates.selecting_pickup)
@@ -602,7 +604,8 @@ async def confirm_pickup(callback: CallbackQuery, state: FSMContext):
     selected_ids: List[int] = data.get("selected_ids", [])
 
     if not selected_ids:
-        msg = "Выберите хотя бы один предмет" if lang == "RUS" else "Select at least one item"
+        lc = "ru" if lang == "RUS" else "en"
+        msg = locale_manager.get_text(lc, "inventory.select_at_least_one")
         await callback.answer(msg, show_alert=True)
         return
 
@@ -610,7 +613,7 @@ async def confirm_pickup(callback: CallbackQuery, state: FSMContext):
     selected_items = [i for i in selected_items if i]
 
     if not selected_items:
-        await callback.answer("Предметы не найдены", show_alert=True)
+        await callback.answer(locale_manager.get_text(lc, "inventory.items_not_found"), show_alert=True)
         await state.clear()
         return
 
@@ -650,22 +653,8 @@ async def _ask_pickup_qty(target, state: FSMContext, lang: str, edit: bool = Fal
 
     max_qty = item.get("quantity", 1)
     name = item.get("name", "?")
-    if lang == "RUS":
-        text = (
-            f"🎒 <b>Сколько забрать?</b>\n\n"
-            f"Предмет: <b>{name}</b>\n"
-            f"Доступно: <b>{max_qty}</b> шт.\n\n"
-            f"Введите число от 1 до {max_qty} или <b>все</b>.\n"
-            f"Для отмены — /cancel"
-        )
-    else:
-        text = (
-            f"🎒 <b>How many to take?</b>\n\n"
-            f"Item: <b>{name}</b>\n"
-            f"Available: <b>{max_qty}</b>\n\n"
-            f"Enter a number from 1 to {max_qty} or <b>all</b>.\n"
-            f"To cancel — /cancel"
-        )
+    lc = "ru" if lang == "RUS" else "en"
+    text = locale_manager.get_text(lc, "inventory.how_many_to_take").format(name=name, max_qty=max_qty)
     msg = target if isinstance(target, Message) else target.message
     if edit:
         try:
@@ -684,8 +673,8 @@ async def pickup_qty_receive(message: Message, state: FSMContext):
 
     if message.text and message.text.strip().lower() == "/cancel":
         await state.clear()
-        cancel_text = "🚫 Отменено" if lang == "RUS" else "🚫 Cancelled"
-        await message.answer(cancel_text)
+        lc = "ru" if lang == "RUS" else "en"
+        await message.answer(locale_manager.get_text(lc, "common.cancelled"))
         return
 
     queue: List[int] = data.get("pickup_qty_queue", [])
@@ -745,8 +734,8 @@ async def _finalize_pickup(target, state: FSMContext, user, user_id: int,
     request_id = db.create_pickup_request(user_id, [i["id"] for i in items_with_qty_list])
     if not request_id:
         msg = target if isinstance(target, Message) else target.message
-        err = "❌ Ошибка создания запроса" if lang == "RUS" else "❌ Request creation error"
-        await msg.answer(err)
+        lc = "ru" if lang == "RUS" else "en"
+        await msg.answer(locale_manager.get_text(lc, "inventory.request_creation_error"))
         await state.clear()
         return
 
@@ -757,10 +746,8 @@ async def _finalize_pickup(target, state: FSMContext, user, user_id: int,
     await state.clear()
 
     msg = target if isinstance(target, Message) else target.message
-    if lang == "RUS":
-        user_msg = "✅ Запрос отправлен администраторам!\nОжидайте, с вами свяжутся."
-    else:
-        user_msg = "✅ Request sent to administrators!\nPlease wait, they will contact you."
+    lc = "ru" if lang == "RUS" else "en"
+    user_msg = locale_manager.get_text(lc, "inventory.request_sent")
 
     try:
         await msg.edit_text(user_msg, parse_mode="HTML")
@@ -841,7 +828,7 @@ async def admin_chat_from_pickup(callback: CallbackQuery, state: FSMContext):
     target_user_id = int(callback.data.split("_")[3])
     user = db.get_user(target_user_id)
 
-    from handlers.admin import active_chats, ChatStates
+    from handlers.admin_common import active_chats, ChatStates
 
     active_chats[target_user_id] = callback.from_user.id
     db.set_active_chat(target_user_id, callback.from_user.id)  # сохраняем в БД
@@ -918,10 +905,8 @@ async def admin_take_pickup_request(callback: CallbackQuery):
 
     # Уведомляем пользователя
     user_lang = user.get("language", "RUS") if user else "RUS"
-    if user_lang == "RUS":
-        user_msg = "✅ Администратор выдал вам предметы!\nОни удалены из вашего инвентаря."
-    else:
-        user_msg = "✅ Administrator has given you the items!\nThey have been removed from your inventory."
+    user_lc = "ru" if user_lang == "RUS" else "en"
+    user_msg = locale_manager.get_text(user_lc, "inventory.items_given")
     try:
         await callback.bot.send_message(user_id, user_msg)
     except Exception as e:
@@ -1313,7 +1298,7 @@ async def _ask_delete_qty(target, state: FSMContext, edit: bool = False):
     if not item:
         # Предмет не найден — пропускаем
         qty_map: dict = data.get("delete_qty_map", {})
-        qty_map[str(item_id)] = item.get("quantity", 1) if item else 1
+        qty_map[str(item_id)] = 1
         await state.update_data(delete_qty_queue=queue[1:], delete_qty_map=qty_map)
         await _ask_delete_qty(target, state, edit=edit)
         return
@@ -1814,7 +1799,9 @@ async def admin_food_qty_receive(message: Message, state: FSMContext):
         )
     # Уведомляем пользователя
     if user_lang == "RUS":
-        notif = f"🎒 Администратор добавил еду в ваш инвентарь:\n{summary}"
+        notif_lang = (db.get_user(user_id) or {}).get("language", "RUS")
+        notif_lc = "ru" if notif_lang == "RUS" else "en"
+        notif = locale_manager.get_text(notif_lc, "inventory.food_added_notification").format(summary=summary)
     else:
         notif = f"🎒 Administrator added food to your inventory:\n{summary}"
     try:
@@ -2019,10 +2006,8 @@ async def _save_pet_to_db(message_or_callback, state: FSMContext,
             item_type="pet",
             item_name=full_name,
         )
-        if user_lang == "RUS":
-            notif = f"🎒 Администратор добавил пета в ваш инвентарь:\n<b>{full_name}</b>"
-        else:
-            notif = f"🎒 Administrator added a pet to your inventory:\n<b>{full_name}</b>"
+        notif_lc = "ru" if user_lang == "RUS" else "en"
+        notif = locale_manager.get_text(notif_lc, "inventory.pet_added_notification").format(full_name=full_name)
         try:
             await bot.send_message(target_user_id, notif, parse_mode="HTML")
         except Exception as e:
@@ -2084,11 +2069,8 @@ async def _notify_item_added(message: Message, target_user_id: int, name: str,
             parse_mode="HTML",
         )
         user_lang = (user or {}).get("language", "RUS")
-        notif = (
-            f"🎒 Администратор добавил предмет в ваш инвентарь:\n<b>{name}</b>"
-            if user_lang == "RUS" else
-            f"🎒 Administrator added an item to your inventory:\n<b>{name}</b>"
-        )
+        notif_lc = "ru" if user_lang == "RUS" else "en"
+        notif = locale_manager.get_text(notif_lc, "inventory.item_added_notification").format(name=name)
         try:
             await message.bot.send_message(target_user_id, notif, parse_mode="HTML")
         except Exception as e:
@@ -2187,16 +2169,15 @@ async def user_add_pet_receive_photo(message: Message, state: FSMContext):
     user = db.get_user(user_id)
     lang = user.get("language", "RUS") if user else "RUS"
 
+    lc = "ru" if lang == "RUS" else "en"
+
     if message.text and message.text.strip() == "/cancel":
         await state.clear()
-        await message.answer("🚫 Отменено." if lang == "RUS" else "🚫 Cancelled.")
+        await message.answer(locale_manager.get_text(lc, "common.cancelled_dot"))
         return
 
     if not message.photo:
-        await message.answer(
-            "❌ Пожалуйста, отправьте фотографию." if lang == "RUS"
-            else "❌ Please send a photo."
-        )
+        await message.answer(locale_manager.get_text(lc, "inventory.send_photo_please"))
         return
 
     file_id = message.photo[-1].file_id
@@ -2254,11 +2235,8 @@ async def _send_pet_request_to_admins(
     """Подтверждение пользователю + уведомление всех администраторов."""
     user_id = message.from_user.id
 
-    await message.answer(
-        "✅ Фото получено! Администратор свяжется с вами для добавления питомца в инвентарь."
-        if lang == "RUS" else
-        "✅ Photo received! The administrator will contact you to add the pet to your inventory."
-    )
+    lc = "ru" if lang == "RUS" else "en"
+    await message.answer(locale_manager.get_text(lc, "inventory.photo_received"))
 
     pet_request_id = db.create_pickup_request(user_id, [], request_type="pet_add")
 

@@ -369,10 +369,15 @@ class Database:
                 conn.commit()
     
     def get_all_users(self) -> List[Dict]:
-        """Получение списка всех пользователей"""
+        """Получение списка всех пользователей с Roblox-никами"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM users ORDER BY created_at DESC')
+            cursor.execute('''
+                SELECT u.*, r.roblox_nick
+                FROM users u
+                LEFT JOIN roblox_nicks r ON u.user_id = r.user_id
+                ORDER BY u.created_at DESC
+            ''')
             return [dict(row) for row in cursor.fetchall()]
     
     def get_active_subscribers(self) -> List[Dict]:

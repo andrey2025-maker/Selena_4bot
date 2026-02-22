@@ -1,16 +1,18 @@
 {
     "start": {
         "welcome": "🇺🇸🍽️ Welcome to the Build a Zoo bot for sending notifications about Stock and Totems!",
-        "choose_language": "🇺🇸🗯️Select the language in which you will receive notifications:"
+        "choose_language": "🇺🇸🗯️Select the language in which you will receive notifications:",
+        "welcome_menu": "👋 <b>Welcome!</b> Use the buttons below to navigate.",
+        "choose_language_change": "🇷🇺 Выберите язык:\n🇺🇸 Choose language:"
     },
     "subscription": {
         "require": "To receive notifications, subscribe to the group:\n👉 @buildazoo_chat\nAfter subscribing, click the button:",
         "check_button": "🔍 Check subscription",
         "not_subscribed": "❌ You are not subscribed to the group yet.\nSubscribe and click the button again.\n👉 @buildazoo_chat",
-        "confirmed": "✅ Subscription confirmed!\nNow configure which notifications you want to receive:\n\n🥝 Food - select fruits for which you want to receive notifications\n🗿 Free - Notifications about free totems\n🗿💎 Paid - Notifications about paid totems (payment is usually specified in the text with a link to the totem, and it indicates who to send it to; most often it's a person near the food shop. If you're slow and don't send it in time, the person might block you)\n\nBy writing these words, you can select the desired fruits again: \"Food, Stock, Eat, Totems, Totem\"\nBy writing \"Disable, Off\" you will disable all notifications."
+        "confirmed": "✅ Subscription confirmed!\nNow configure which notifications you want to receive:\n\n🥝 Food - select fruits for which you want to receive notifications\n🗿 Free - Notifications about free totems\n🗿💎 Paid - Notifications about paid totems (payment is usually specified in the text with a link to the totem, and it indicates who to send it to; most often it's a person near the food shop. If you're slow and don't send it in time, the person might block you)"
     },
     "settings": {
-        "title": "⚙️ Notification settings:\nNow configure which notifications you want to receive:\n\n🥝 Food - select fruits for which you want to receive notifications\n🗿 Free - Notifications about free totems\n🗿💎 Paid - Notifications about paid totems (payment is usually specified in the text with a link to the totem, and it indicates who to send it to; most often it's a person near the food shop. If you're slow and don't send it in time, the person might block you)\n\nBy writing these words, you can select the desired fruits again: \"Food, Stock, Eat, Totems, Totem\"\nBy writing \"Disable, Off\" you will disable all notifications.",
+        "title": "⚙️ Notification settings:\nNow configure which notifications you want to receive:\n\n🥝 Food - select fruits for which you want to receive notifications\n🗿 Free - Notifications about free totems\n🗿💎 Paid - Notifications about paid totems (payment is usually specified in the text with a link to the totem, and it indicates who to send it to; most often it's a person near the food shop. If you're slow and don't send it in time, the person might block you)",
         "food_button": "🥝 Food (fruit selection)",
         "free_totems_button": "🗿 Free totems",
         "paid_totems_button": "💎 Paid totems",
@@ -21,7 +23,14 @@
         "saved": "✅ Settings saved!\nYou will receive:\n{fruits}",
         "no_fruits_selected": "ℹ️ You haven't selected any fruits. Food notifications will not be sent.",
         "totem_toggle_on": "✅ ON",
-        "totem_toggle_off": "❌ OFF"
+        "totem_toggle_off": "❌ OFF",
+        "all_fruits": "📦 All fruits",
+        "current_header": "📋 <b>Current settings:</b>",
+        "fruits_label": "🥝 Fruits",
+        "notifications_disabled": "✅ All notifications disabled!\nTo enable again — click «🔔 Notifications»"
+    },
+    "help": {
+        "text": "📖 <b>Bot Help</b>\n\n🔔 <b>Notifications</b> — configure which notifications to receive\n🥝 <b>Food</b> — choose fruits you want to be notified about\n🗿 <b>Totems</b> — free and paid totems\n🎒 <b>Inventory</b> — your items and pets\n🔄 <b>Trade</b> — trade items with other players\n\n❓ For questions, contact an administrator."
     },
     "notifications": {
         "food_title": "🍽️ New food in stock!",
@@ -30,23 +39,55 @@
         "stock_prefix": "stock",
         "unsubscribed": "❌ You have unsubscribed from the required group. Notifications suspended.\nSubscribe again and click 'Check subscription'."
     },
+    "common": {
+        "cancelled": "🚫 Cancelled",
+        "cancelled_dot": "🚫 Cancelled.",
+        "error": "❌ An error occurred. Please try again later."
+    },
     "admin": {
         "stats": "📊 Bot statistics:\n👥 Total users: {total_users}\n✅ Active subscribers: {active_subscribers}\n\n🍎 Fruit popularity:\n{fruit_stats}\n\n🗿 Free totems: {free_totems}\n💎 Paid totems: {paid_totems}",
         "broadcast_started": "📢 Broadcast started for {count} users...",
         "broadcast_completed": "✅ Broadcast completed! Sent {success} out of {total} messages.",
-        "access_denied": "⛔ You don't have administrator rights."
+        "access_denied": "⛔ You don't have administrator rights.",
+        "chat_started": "👤 <b>An administrator has contacted you</b>"
     },
     "trade": {
         "enter_own_nick": "🎮 Enter your Roblox nickname (e.g. @MyNick or just MyNick):",
+        "enter_own_nick_cancel": "🎮 Enter your Roblox nickname (e.g. @MyNick or just MyNick):\n\nTo cancel: /cancel",
         "nick_saved_enter_partner": "✅ Nickname saved: <b>@{nick}</b>\n\nSpecify the second trade participant:\n• Forward any message from them\n• Or enter their @username / Telegram ID",
-        "enter_partner": "🎮 Your Roblox nickname: <b>@{nick}</b>\n\nSpecify the second trade participant:\n• Forward any message from them\n• Or enter their @username / Telegram ID",
+        "enter_partner": "🎮 Your Roblox nickname: <b>@{nick}</b>\n\nSpecify the second trade participant:\n• Forward any message from them\n• Or enter their @username / Telegram ID\n\nTo cancel: /cancel",
         "partner_not_found": "❌ User not found or has never started the bot.\n\nShare this link: {link}",
+        "partner_not_found_username": "❌ User @{username} not found.\nMake sure they have started the bot at least once.\n\nTry forwarding their message or entering their Telegram ID.",
         "partner_no_nick": "⏳ The second participant hasn't set their Roblox nickname yet. They have been notified — the trade will start automatically once they enter it.",
         "trade_started": "🔄 <b>Trade started!</b>\n\nSend messages — they will be forwarded to the other participant.\n⏳ An administrator will join shortly.",
         "admin_joined": "👑 An administrator has joined the conversation.",
         "trade_ended": "✅ Trade completed. Messages are no longer being forwarded.",
         "not_in_trade": "❌ You have no active trade.",
-        "enter_nick_for_trade": "⚠️ You have been invited to a trade! First, enter your Roblox nickname (e.g. @MyNick):"
+        "enter_nick_for_trade": "⚠️ You have been invited to a trade! First, enter your Roblox nickname (e.g. @MyNick):",
+        "cancelled": "🚫 Trade cancelled.",
+        "enter_nick_text_only": "❌ Please enter your nickname as text.",
+        "nick_saved": "✅ Roblox nickname saved: <b>@{nick}</b>",
+        "nick_saved_short": "✅ Nickname saved: <b>@{nick}</b>",
+        "cannot_trade_self": "❌ You cannot start a trade with yourself.",
+        "user_not_registered": "❌ This user is not registered in the bot yet.\n\nSend them this link to register: {link}",
+        "partner_needs_nick": "🔄 User {link} is inviting you to a trade!\n\nFirst, enter your Roblox nickname (e.g. @MyNick):\n\nTo cancel: /cancel",
+        "request_sent_waiting_nick": "✅ Request sent to the user.\nWaiting for them to set their Roblox nickname — the trade will start automatically.",
+        "confirm_request": "🔄 <b>Trade request</b>\n\nUser {link} (Roblox: <b>{nick}</b>) wants to start a trade with you.\n\nAccept?",
+        "confirmation_timeout": "⏰ Trade confirmation timed out.",
+        "request_sent_waiting_confirm": "✅ Trade request sent to user {link}.\nWaiting for confirmation...",
+        "accepted": "✅ You accepted the trade! Starting...",
+        "declined_by_you": "❌ You declined the trade request.",
+        "declined_by_partner": "❌ User {link} declined your trade request.",
+        "trade_data_expired": "❌ Trade data has expired. Please try again.",
+        "no_active_trade": "❌ You have no active trade.",
+        "you_ended": "✅ You have ended the trade.",
+        "partner_ended": "❌ The other participant has ended the trade.",
+        "session_ended": "❌ Trade has ended.",
+        "session_not_found": "❌ Trade session not found.",
+        "completed_by_admin": "✅ <b>Trade completed.</b>\nThank you for using the service!",
+        "admin_joined_dialog": "👨‍💼 <b>An administrator has joined the conversation.</b>",
+        "user_hidden_forwarding": "❌ Could not identify the user — they have hidden their forwarding info.\n\nAsk them to send you their @username or Telegram ID directly.",
+        "user_not_identified": "❌ Could not identify the user.\nForward their message or enter @username / Telegram ID."
     },
     "inventory": {
         "empty": "🎒 Your inventory is empty.",
@@ -54,7 +95,63 @@
         "pickup_sent": "✅ Pickup request sent to the administrator.",
         "pickup_request_title": "📦 <b>Item pickup request</b>",
         "add_pet_prompt": "📸 Send photos of your pets to add them to your inventory.",
-        "add_pet_received": "✅ Photos received! An administrator will contact you."
+        "add_pet_received": "✅ Photos received! An administrator will contact you.",
+        "empty_alert": "Inventory is empty",
+        "select_for_pickup": "🎒 <b>Select items to pick up:</b>",
+        "select_at_least_one": "Select at least one item",
+        "items_not_found": "Items not found",
+        "how_many_to_take": "🎒 <b>How many to take?</b>\n\nItem: <b>{name}</b>\nAvailable: <b>{max_qty}</b>\n\nEnter a number from 1 to {max_qty} or <b>all</b> for full pickup.\nTo cancel — /cancel",
+        "enter_qty_error": "❌ Enter a number from 1 to {max_qty} or 'all'",
+        "request_creation_error": "❌ Request creation error",
+        "request_sent": "✅ Request sent to administrators!\nPlease wait, they will contact you.",
+        "items_given": "✅ Administrator has given you the items!\nThey have been removed from your inventory.",
+        "send_photo_please": "❌ Please send a photo.",
+        "photo_received": "✅ Photo received! The administrator will contact you to add the pet to your inventory.",
+        "pet_added_notification": "🎒 Administrator added a pet to your inventory:\n<b>{full_name}</b>",
+        "food_added_notification": "🎒 Administrator added food to your inventory:\n{summary}",
+        "item_added_notification": "🎒 Administrator added an item to your inventory:\n<b>{name}</b>"
+    },
+    "item_trade": {
+        "already_active": "⚠️ You already have an active trade. Finish or cancel it first.",
+        "inventory_empty": "🎒 Your inventory is empty — nothing to offer.",
+        "start_text": "🔄 <b>Item Trade</b>\n\nSpecify your trade partner:\n• Forward any message from them\n• Or enter @username / Telegram ID\n\nTo cancel: /cancel",
+        "user_not_found": "❌ User not found. Try again or /cancel",
+        "cannot_trade_self": "❌ Cannot trade with yourself.",
+        "partner_not_registered": "❌ This user is not registered in the bot yet.",
+        "partner_has_active": "❌ This user already has an active trade. Try later.",
+        "creation_error": "❌ Trade creation error.",
+        "invitation_sent": "✅ Invitation sent to <b>{partner}</b>.\nWaiting for response…",
+        "invite_text": "🔄 <b>Trade invitation</b>\n\n<b>{init}</b> wants to trade inventory items with you.\n\nAccept the trade?",
+        "invitation_send_error": "❌ Could not send invitation: {e}",
+        "partner_accepted": "✅ <b>{partner}</b> accepted the trade!\nNow select the items you want to offer.",
+        "select_items": "🎒 <b>Select items to trade:</b>\n\nMark what you want to offer your partner.",
+        "you_declined": "❌ You declined the trade",
+        "partner_declined": "❌ <b>{partner}</b> declined the trade.",
+        "review_text_header": "🔄 <b>Item Trade</b>",
+        "review_you_offer": "📤 <b>You offer:</b>",
+        "review_partner_offers": "📥 <b>{partner} offers:</b>",
+        "review_nothing": "— nothing",
+        "partner_finished_selecting": "ℹ️ <b>{partner}</b> finished selecting items.\nNow proceed to confirm the trade.",
+        "trade_cancelled_notify": "❌ <b>Trade cancelled</b>\n{canceller} cancelled the trade.",
+        "trade_success": "✅ <b>Trade completed successfully!</b>\nItems transferred.",
+        "trade_error": "❌ <b>Trade execution error.</b>\nItems returned.",
+        "you_confirmed": "✅ Confirmed! Waiting for partner…",
+        "partner_confirmed": "ℹ️ <b>{user}</b> confirmed the trade. Your turn!",
+        "trade_success_notify": "✅ <b>Trade with {partner} completed!</b>\nItems added to your inventory.",
+        "edit_offer": "🎒 <b>Edit your offer:</b>",
+        "partner_editing": "✏️ <b>{user}</b> is editing their offer. Confirmations reset.",
+        "cancelled_message": "❌ <b>Trade cancelled.</b>",
+        "cancelled_alert": "❌ Trade cancelled"
+    },
+    "giveaway": {
+        "winners_header": "🏆 <b>Giveaway winners:</b>",
+        "no_participants": "😔 <b>No one participated in the giveaway.</b>",
+        "winner_notification": "🎉 <b>Congratulations! You won {i} place in the giveaway!</b>\n\n🎁 <b>Your prizes:</b>",
+        "already_finished": "❌ The giveaway has already ended.",
+        "not_registered": "❌ You are not registered in the bot. Send /start to the bot in private messages.",
+        "subscription_required": "❌ To participate you must subscribe to:\n• @buildazoo_chat\n{channels}",
+        "already_participating": "✅ You are already participating in this giveaway!",
+        "joined_success": "🎉 You have successfully joined the giveaway!"
     },
     "keyboard_refresh": {
         "updated": "🔄 Keyboard updated"

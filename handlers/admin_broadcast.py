@@ -117,20 +117,6 @@ async def broadcast_all_callback(callback: types.CallbackQuery, state: FSMContex
 
 # ========== КОМАНДЫ ==========
 
-@router.message(Command("cancel"), F.chat.type == "private")
-async def cancel_broadcast(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет прав администратора")
-        return
-    current_state = await state.get_state()
-    if current_state is None:
-        await message.answer("❌ Нет активных операций для отмены")
-        return
-    await state.clear()
-    if "BroadcastStates" in current_state:
-        await message.answer("🚫 Рассылка отменена")
-    else:
-        await message.answer("🚫 Операция отменена")
 
 @router.message(Command("broadcast"), F.chat.type == "private")
 async def cmd_broadcast(message: Message, state: FSMContext):
@@ -168,6 +154,11 @@ async def process_broadcast_message(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ У вас нет прав администратора")
         await state.clear()
+        return
+
+    if message.text and message.text.strip() in ("/cancel", "/отмена"):
+        await state.clear()
+        await message.answer("🚫 Рассылка отменена.")
         return
 
     data = await state.get_data()

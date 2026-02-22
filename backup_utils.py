@@ -1,4 +1,4 @@
-﻿"""
+"""
 backup_utils.py - Утилиты для создания и управления бэкапами базы данных
 """
 
@@ -27,9 +27,25 @@ class DatabaseBackup:
             os.makedirs(self.backup_dir)
             logger.info(f"Создана папка для бэкапов: {self.backup_dir}")
     
+    def _safe_copy_db(self, dest_path: str):
+        """
+        Безопасное копирование БД через SQLite BACKUP API.
+        Автоматически сбрасывает WAL в основной файл перед копированием,
+        поэтому dest_path будет полным консистентным снимком без -wal/-shm.
+        """
+        src_conn = sqlite3.connect(self.db_path)
+        dst_conn = sqlite3.connect(dest_path)
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            dst_conn.close()
+            src_conn.close()
+
     def create_backup(self, compress: bool = True) -> Optional[str]:
         """
-        Создание бэкапа базы данных
+        Создание бэкапа базы данных.
+        Использует SQLite BACKUP API — безопасно при активном WAL,
+        все незафиксированные изменения включаются автоматически.
         
         Args:
             compress: Сжимать ли файл с помощью gzip
@@ -47,14 +63,18 @@ class DatabaseBackup:
             if compress:
                 backup_name = f"database_backup_{timestamp}.db.gz"
                 backup_path = os.path.join(self.backup_dir, backup_name)
-                
-                # Создаем сжатый бэкап
-                with open(self.db_path, 'rb') as f_in:
+
+                # Сначала делаем консистентный снимок во временный файл
+                tmp_path = backup_path + ".tmp"
+                self._safe_copy_db(tmp_path)
+
+                # Сжимаем временный файл
+                original_size = os.path.getsize(tmp_path)
+                with open(tmp_path, 'rb') as f_in:
                     with gzip.open(backup_path, 'wb') as f_out:
                         shutil.copyfileobj(f_in, f_out)
-                
-                # Получаем размеры файлов
-                original_size = os.path.getsize(self.db_path)
+                os.remove(tmp_path)
+
                 compressed_size = os.path.getsize(backup_path)
                 compression_ratio = (1 - compressed_size / original_size) * 100
                 
@@ -64,10 +84,10 @@ class DatabaseBackup:
             else:
                 backup_name = f"database_backup_{timestamp}.db"
                 backup_path = os.path.join(self.backup_dir, backup_name)
-                
-                # Просто копируем файл
-                shutil.copy2(self.db_path, backup_path)
-                
+
+                # Консистентный снимок через SQLite BACKUP API
+                self._safe_copy_db(backup_path)
+
                 file_size = os.path.getsize(backup_path)
                 logger.info(f"Создан бэкап: {backup_name} ({file_size:,} байт)")
             
@@ -83,7 +103,13 @@ class DatabaseBackup:
     def create_json_backup(self) -> Optional[str]:
         """Создание бэкапа в формате JSON (легче для чтения)"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            # Читаем через консистентный снимок чтобы захватить WAL
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                tmp_path = tmp.name
+            self._safe_copy_db(tmp_path)
+
+            conn = sqlite3.connect(tmp_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
@@ -108,7 +134,8 @@ class DatabaseBackup:
                 backup_data["tables"][table] = table_data
             
             conn.close()
-            
+            os.remove(tmp_path)
+
             # Сохраняем в JSON
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             json_name = f"database_backup_{timestamp}.json"

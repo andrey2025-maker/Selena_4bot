@@ -234,11 +234,27 @@ async def show_admin_panel(message_or_callback):
 
 @router.message(Command("admin"), F.chat.type == "private")
 async def cmd_admin(message: Message):
-    await show_admin_panel(message)
+    logger.info(f"[/admin] от {message.from_user.id} (@{message.from_user.username})")
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ У вас нет прав администратора.")
+        return
+    try:
+        await show_admin_panel(message)
+    except Exception as e:
+        logger.error(f"[/admin] ошибка: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка при открытии панели: {e}")
 
 @router.message(Command("stats"), F.chat.type == "private")
 async def cmd_stats(message: Message):
-    await show_stats(message)
+    logger.info(f"[/stats] от {message.from_user.id}")
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ У вас нет прав администратора.")
+        return
+    try:
+        await show_stats(message)
+    except Exception as e:
+        logger.error(f"[/stats] ошибка: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 # ========== CALLBACKS: ПАНЕЛЬ И СТАТИСТИКА ==========
@@ -342,8 +358,6 @@ async def admin_search_receive(message: Message, state: FSMContext):
     for user in all_users:
         uid = user.get("user_id", 0)
         username = (user.get("username") or "").lower()
-        first_name = (user.get("first_name") or "").lower()
-        last_name = (user.get("last_name") or "").lower()
         roblox = (user.get("roblox_nick") or "").lower()
 
         # Точное совпадение по ID
@@ -353,12 +367,6 @@ async def admin_search_receive(message: Message, state: FSMContext):
 
         # Совпадение по username (с @ или без)
         if q_lower and username and (q_lower == username or q_lower in username):
-            results.append(user)
-            continue
-
-        # Совпадение по имени
-        full_name = f"{first_name} {last_name}".strip()
-        if q_lower and q_lower in full_name:
             results.append(user)
             continue
 
@@ -386,15 +394,12 @@ async def admin_search_receive(message: Message, state: FSMContext):
     for user in results[:20]:
         uid = user["user_id"]
         username = user.get("username")
-        first_name = user.get("first_name") or ""
         roblox = user.get("roblox_nick")
         is_sub = "✅" if user.get("is_subscribed") else "❌"
         lang = user.get("language", "?")
 
         if username:
             display = f"@{username}"
-        elif first_name:
-            display = first_name
         else:
             display = f"ID: {uid}"
 

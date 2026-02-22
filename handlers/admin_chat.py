@@ -7,8 +7,7 @@ from aiogram import Router, types, F
 from utils.log_events import (
     log_exception_added, log_exception_removed, log_roblox_nick_changed,
 )
-from aiogram.filters import Command, StateFilter
-from aiogram.fsm.state import default_state
+from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 import logging
@@ -127,9 +126,9 @@ async def process_user_selection(message: Message, state: FSMContext):
 
     lang_code = "ru" if user.get("language", "RUS") == "RUS" else "en"
     notification = (
-        "👤 <b>С Вами связался администратор</b>\n\nДля завершения диалога напишите /stop"
+        "👤 <b>С Вами связался администратор</b>"
         if lang_code == "ru"
-        else "👤 <b>An administrator has contacted you</b>\n\nType /stop to end the conversation"
+        else "👤 <b>An administrator has contacted you</b>"
     )
 
     try:
@@ -155,6 +154,7 @@ async def process_user_selection(message: Message, state: FSMContext):
     await state.update_data(chat_with_user=user_id)
 
 
+
 @router.message(ChatStates.chatting)
 async def forward_admin_message(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -172,20 +172,6 @@ async def forward_admin_message(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    if message.text == "/stop":
-        user = db.get_user(user_id)
-        lang_code = "ru" if (user.get("language", "RUS") if user else "RUS") == "RUS" else "en"
-        end_msg = "Диалог завершен администратором." if lang_code == "ru" else "Conversation ended by administrator."
-        try:
-            await message.bot.send_message(user_id, end_msg)
-        except Exception:
-            pass
-        active_chats.pop(user_id, None)
-        db.remove_active_chat(user_id)
-        await message.answer("✅ Диалог завершен.")
-        await state.clear()
-        return
-
     try:
         await message.copy_to(user_id)
     except Exception as e:
@@ -196,42 +182,7 @@ async def forward_admin_message(message: Message, state: FSMContext):
             await state.clear()
 
 
-@router.message(F.chat.type == "private", StateFilter(default_state))
-async def handle_user_to_admin(message: Message):
-    """Пересылка сообщений от пользователей администратору (только вне FSM-состояний)."""
-    user_id = message.from_user.id
-    if is_admin(user_id):
-        return
-    if user_id not in active_chats:
-        return
 
-    admin_id = active_chats[user_id]
-
-    if message.text and message.text.strip() == "/stop":
-        user_info = f"ID: {user_id}"
-        user = db.get_user(user_id)
-        if user and user.get("username"):
-            user_info += f" (@{user['username']})"
-        try:
-            await message.bot.send_message(admin_id, f"❌ Пользователь {user_info} завершил диалог командой /stop")
-        except Exception:
-            pass
-        active_chats.pop(user_id, None)
-        db.remove_active_chat(user_id)
-        return
-
-    try:
-        user_info = f"ID: {user_id}"
-        user = db.get_user(user_id)
-        if user and user.get("username"):
-            user_info += f" (@{user['username']})"
-        await message.forward(admin_id)
-        await message.bot.send_message(admin_id, f"📨 <b>Сообщение от пользователя:</b>\n{user_info}", parse_mode="HTML")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка отправки: {e}")
-        if "Forbidden" in str(e) or "chat not found" in str(e):
-            active_chats.pop(user_id, None)
-            db.remove_active_chat(user_id)
 
 
 @router.message(Command("active_chats"), F.chat.type == "private")
@@ -560,8 +511,15 @@ async def admin_roblox_view_start(callback: types.CallbackQuery, state: FSMConte
 @router.message(RobloxNickStates.waiting_for_user_id)
 async def admin_roblox_receive_user_id(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
+        await state.clear()
         return
     text = message.text.strip() if message.text else ""
+
+    if text in ("/cancel", "/отмена"):
+        await state.clear()
+        await message.answer("🚫 Операция отменена.")
+        return
+
     target_id: int | None = None
 
     if text.startswith("@"):
@@ -611,8 +569,16 @@ async def admin_roblox_receive_user_id(message: Message, state: FSMContext):
 @router.message(RobloxNickStates.waiting_for_new_nick)
 async def admin_roblox_receive_new_nick(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
+        await state.clear()
         return
-    new_nick = message.text.strip().lstrip("@") if message.text else ""
+
+    raw = message.text.strip() if message.text else ""
+    if raw in ("/cancel", "/отмена"):
+        await state.clear()
+        await message.answer("🚫 Операция отменена.")
+        return
+
+    new_nick = raw.lstrip("@")
     if not new_nick:
         await message.answer("❌ Ник не может быть пустым. Введите ник ещё раз:")
         return

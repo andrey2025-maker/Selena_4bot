@@ -244,6 +244,7 @@ async def main():
         from handlers.giveaway import router as giveaway_router
         from handlers.trade import router as trade_router
         from handlers.item_trade import router as item_trade_router
+        from handlers.admin_stop import router as admin_stop_router
 
         # Порядок важен: специфичные фильтры — раньше, широкие — позже
         dp.include_router(group_commands_router)  # !число / !инв — перехватывает '!' в группах
@@ -251,6 +252,7 @@ async def main():
         dp.include_router(settings_router)        # настройки уведомлений
         dp.include_router(inventory_router)       # 🎒 Инвентарь — до admin, иначе перехватывается
         dp.include_router(item_trade_router)      # P2P-обмен предметами инвентаря
+        dp.include_router(admin_stop_router)      # /stop для админ-чата — раньше trade_router
         dp.include_router(trade_router)           # обмены через администратора — FSM-хендлеры
         dp.include_router(giveaway_router)        # розыгрыши
         dp.include_router(admin_router)           # админка (широкий F.chat.type=="private" — последним)

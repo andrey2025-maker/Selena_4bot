@@ -15,11 +15,13 @@ from aiogram.filters import Command
 from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
+    LinkPreviewOptions,
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from database import Database
+from utils.messages import locale_manager
 from config import Config
 from utils.keyboards import get_main_keyboard
 from utils.log_events import log_giveaway_created, log_giveaway_finished
@@ -281,8 +283,8 @@ async def finish_giveaway(bot: Bot, giveaway_id: int):
 
     # Формируем текст результатов
     if winners:
-        winners_lines_ru = ["🏆 <b>Победители розыгрыша:</b>\n"]
-        winners_lines_en = ["🏆 <b>Giveaway winners:</b>\n"]
+        winners_lines_ru = [locale_manager.get_text("ru", "giveaway.winners_header") + "\n"]
+        winners_lines_en = [locale_manager.get_text("en", "giveaway.winners_header") + "\n"]
         for i, w in enumerate(winners, 1):
             link = _user_link(w["user_id"], w.get("username"))
             winners_lines_ru.append(f"{i}. {link}")
@@ -290,8 +292,8 @@ async def finish_giveaway(bot: Bot, giveaway_id: int):
         results_ru = "\n".join(winners_lines_ru)
         results_en = "\n".join(winners_lines_en)
     else:
-        results_ru = "😔 <b>Никто не принял участие в розыгрыше.</b>"
-        results_en = "😔 <b>No one participated in the giveaway.</b>"
+        results_ru = locale_manager.get_text("ru", "giveaway.no_participants")
+        results_en = locale_manager.get_text("en", "giveaway.no_participants")
 
     # Рассылаем результаты только участникам розыгрыша
     for participant in participants:
@@ -300,7 +302,7 @@ async def finish_giveaway(bot: Bot, giveaway_id: int):
         lang = (p_user or {}).get("language", "RUS")
         text = results_ru if lang == "RUS" else results_en
         try:
-            await bot.send_message(uid, text, parse_mode="HTML", disable_web_page_preview=True)
+            await bot.send_message(uid, text, parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
             await asyncio.sleep(0.05)
         except Exception:
             pass
@@ -311,7 +313,7 @@ async def finish_giveaway(bot: Bot, giveaway_id: int):
             Config.REQUIRED_GROUP_ID,
             results_ru,
             parse_mode="HTML",
-            disable_web_page_preview=True
+            link_preview_options=LinkPreviewOptions(is_disabled=True)
         )
     except Exception as e:
         logger.error(f"Error posting results to group: {e}")
@@ -322,14 +324,10 @@ async def finish_giveaway(bot: Bot, giveaway_id: int):
         lang = winner.get("language", "RUS")
         place_prizes = prizes_by_place.get(i, [])
 
-        if lang == "RUS":
-            header = f"🎉 <b>Поздравляем! Вы заняли {i} место в розыгрыше!</b>\n\n"
-            if place_prizes:
-                header += "🎁 <b>Ваши призы:</b>\n"
-        else:
-            header = f"🎉 <b>Congratulations! You won {i} place in the giveaway!</b>\n\n"
-            if place_prizes:
-                header += "🎁 <b>Your prizes:</b>\n"
+        lc = "ru" if lang == "RUS" else "en"
+        header = locale_manager.get_text(lc, "giveaway.winner_notification").format(i=i) + "\n"
+        if not place_prizes:
+            header = header.rstrip("\n")
 
         prize_lines = []
         for j, prize in enumerate(place_prizes, 1):
@@ -442,17 +440,17 @@ async def join_giveaway(callback: CallbackQuery):
 
     giveaway = db.get_giveaway(giveaway_id)
     if not giveaway or giveaway["status"] != "active":
-        await callback.answer("❌ Розыгрыш уже завершён.", show_alert=True)
+        await callback.answer(locale_manager.get_text("ru", "giveaway.already_finished"), show_alert=True)
         return
 
     # Проверяем регистрацию в боте
     user = db.get_user(user_id)
     if not user:
-        await callback.answer(
-            "❌ Вы не зарегистрированы в боте. Напишите /start в личные сообщения боту.",
-            show_alert=True
-        )
+        await callback.answer(locale_manager.get_text("ru", "giveaway.not_registered"), show_alert=True)
         return
+
+    lang = user.get("language", "RUS")
+    lc = "ru" if lang == "RUS" else "en"
 
     # Проверяем подписку на обязательную группу бота
     is_sub = await _check_subscriptions(
@@ -462,16 +460,13 @@ async def join_giveaway(callback: CallbackQuery):
     if not is_sub:
         channels = giveaway.get("required_channels", [])
         channel_list = "\n".join(f"• {ch}" for ch in channels) if channels else ""
-        msg = (
-            "❌ Для участия необходимо подписаться на:\n"
-            f"• @buildazoo_chat\n{channel_list}"
-        )
+        msg = locale_manager.get_text(lc, "giveaway.subscription_required").format(channels=channel_list)
         await callback.answer(msg, show_alert=True)
         return
 
     # Проверяем, не участвует ли уже
     if db.is_giveaway_participant(giveaway_id, user_id):
-        await callback.answer("✅ Вы уже участвуете в этом розыгрыше!", show_alert=True)
+        await callback.answer(locale_manager.get_text(lc, "giveaway.already_participating"), show_alert=True)
         return
 
     # Добавляем участника
@@ -485,11 +480,7 @@ async def join_giveaway(callback: CallbackQuery):
     except Exception:
         pass
 
-    lang = user.get("language", "RUS")
-    if lang == "RUS":
-        await callback.answer("🎉 Вы успешно зарегистрированы в розыгрыше!", show_alert=True)
-    else:
-        await callback.answer("🎉 You have successfully joined the giveaway!", show_alert=True)
+    await callback.answer(locale_manager.get_text(lc, "giveaway.joined_success"), show_alert=True)
 
     # Проверяем завершение по кол-ву участников
     if giveaway["end_type"] == "count":

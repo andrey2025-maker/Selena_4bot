@@ -9,6 +9,7 @@ from typing import List, Dict, Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+from aiogram.types import LinkPreviewOptions
 
 from database import Database
 from config import Config
@@ -95,7 +96,7 @@ async def send_notification(
             user_id,
             text,
             parse_mode=parse_mode,
-            disable_web_page_preview=True
+            link_preview_options=LinkPreviewOptions(is_disabled=True)
             # НЕТ reply_markup - сохраняем текущую клавиатуру пользователя
         )
         return True

@@ -7,13 +7,12 @@ from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from datetime import datetime
-import gzip
 import logging
 import os
-import shutil
 
 from backup_utils import backup_manager
 from handlers.admin_common import is_admin
+from config import Config
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -63,7 +62,7 @@ async def admin_backup_callback(callback: types.CallbackQuery):
 
 # ========== CALLBACK: СОЗДАНИЕ БЭКАПА ==========
 
-@router.callback_query(F.data.startswith("create_"))
+@router.callback_query(F.data.in_({"create_db_backup", "create_compressed_backup", "create_json_backup"}))
 async def create_backup_handler(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ У вас нет прав администратора", show_alert=True)
@@ -204,16 +203,13 @@ async def cmd_backup(message: Message):
     await message.answer("🔄 Создаю бэкап базы данных...")
 
     try:
-        backup_dir = "database_backups"
-        os.makedirs(backup_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"database_backup_{timestamp}.db.gz"
-        backup_path = os.path.join(backup_dir, backup_name)
-
-        with open("database.db", "rb") as f_in, gzip.open(backup_path, "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out)
+        backup_path = backup_manager.create_backup(compress=True)
+        if not backup_path:
+            await message.answer("❌ Не удалось создать бэкап.")
+            return
 
         file_size_mb = os.path.getsize(backup_path) / (1024 * 1024)
+        backup_name = os.path.basename(backup_path)
         with open(backup_path, "rb") as f:
             file_data = f.read()
         await message.bot.send_document(

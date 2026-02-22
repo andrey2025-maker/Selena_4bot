@@ -35,6 +35,7 @@ from aiogram.types import (
 )
 
 from database import Database
+from utils.messages import locale_manager
 from utils.log_events import (
     log_item_trade_start, log_item_trade_complete, log_item_trade_cancel,
 )
@@ -241,10 +242,8 @@ async def _notify_partner_selection_done(bot, trade: dict, done_user_id: int):
     done_user = db.get_user(done_user_id)
     done_display = _user_display(done_user)
 
-    if lang == "RUS":
-        text = f"ℹ️ <b>{done_display}</b> завершил выбор предметов.\nТеперь перейдите к подтверждению обмена."
-    else:
-        text = f"ℹ️ <b>{done_display}</b> finished selecting items.\nPlease proceed to confirm the trade."
+    lc = "ru" if lang == "RUS" else "en"
+    text = locale_manager.get_text(lc, "item_trade.partner_finished_selecting").format(partner=done_display)
 
     try:
         await bot.send_message(partner_id, text, parse_mode="HTML")
@@ -260,10 +259,8 @@ async def _cancel_trade_notify(bot, trade: dict, cancelled_by: int):
     for uid in (trade['initiator_id'], trade['partner_id']):
         user = db.get_user(uid)
         lang = user.get("language", "RUS") if user else "RUS"
-        if lang == "RUS":
-            text = f"❌ <b>Обмен отменён</b>\n{canceller_display} отменил обмен."
-        else:
-            text = f"❌ <b>Trade cancelled</b>\n{canceller_display} cancelled the trade."
+        lc = "ru" if lang == "RUS" else "en"
+        text = locale_manager.get_text(lc, "item_trade.trade_cancelled_notify").format(canceller=canceller_display)
         try:
             await bot.send_message(uid, text, parse_mode="HTML")
         except Exception:
@@ -279,44 +276,23 @@ async def item_trade_start(callback: CallbackQuery, state: FSMContext):
     user = db.get_user(user_id)
     lang = user.get("language", "RUS") if user else "RUS"
 
+    lc = "ru" if lang == "RUS" else "en"
+
     # Проверяем нет ли активного обмена
     existing = db.get_active_item_trade_for_user(user_id)
     if existing:
-        tid = existing['id']
-        if lang == "RUS":
-            text = "⚠️ У вас уже есть активный обмен. Сначала завершите или отмените его."
-        else:
-            text = "⚠️ You already have an active trade. Finish or cancel it first."
-        await callback.answer(text, show_alert=True)
+        await callback.answer(locale_manager.get_text(lc, "item_trade.already_active"), show_alert=True)
         return
 
     items = db.get_unlocked_inventory(user_id)
     if not items:
-        msg = "🎒 Ваш инвентарь пуст — нечего предложить." if lang == "RUS" else "🎒 Your inventory is empty — nothing to offer."
-        await callback.answer(msg, show_alert=True)
+        await callback.answer(locale_manager.get_text(lc, "item_trade.inventory_empty"), show_alert=True)
         return
 
     await state.set_state(ItemTradeStates.waiting_for_partner)
     await state.update_data(trade_lang=lang)
 
-    if lang == "RUS":
-        text = (
-            "🔄 <b>Обмен предметами</b>\n\n"
-            "Укажите партнёра для обмена:\n"
-            "• Введите <b>@username</b>\n"
-            "• Или <b>перешлите</b> любое его сообщение\n\n"
-            "Для отмены — /cancel"
-        )
-    else:
-        text = (
-            "🔄 <b>Item Trade</b>\n\n"
-            "Specify your trade partner:\n"
-            "• Enter <b>@username</b>\n"
-            "• Or <b>forward</b> any of their messages\n\n"
-            "To cancel — /cancel"
-        )
-
-    await callback.message.answer(text, parse_mode="HTML")
+    await callback.message.answer(locale_manager.get_text(lc, "item_trade.start_text"), parse_mode="HTML")
     await callback.answer()
 
 
@@ -327,9 +303,11 @@ async def item_trade_receive_partner(message: Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("trade_lang", "RUS")
 
+    lc = "ru" if lang == "RUS" else "en"
+
     if message.text and message.text.strip().lower() == "/cancel":
         await state.clear()
-        await message.answer("🚫 Отменено" if lang == "RUS" else "🚫 Cancelled")
+        await message.answer(locale_manager.get_text(lc, "common.cancelled"))
         return
 
     partner_id: Optional[int] = None
@@ -355,45 +333,29 @@ async def item_trade_receive_partner(message: Message, state: FSMContext):
                 break
 
     if not partner_id:
-        err = (
-            "❌ Не удалось найти пользователя. Попробуйте ещё раз или /cancel"
-            if lang == "RUS" else
-            "❌ User not found. Try again or /cancel"
-        )
-        await message.answer(err)
+        await message.answer(locale_manager.get_text(lc, "item_trade.user_not_found"))
         return
 
     if partner_id == user_id:
-        err = "❌ Нельзя обменяться с самим собой." if lang == "RUS" else "❌ Cannot trade with yourself."
-        await message.answer(err)
+        await message.answer(locale_manager.get_text(lc, "item_trade.cannot_trade_self"))
         return
 
     # Проверяем что партнёр зарегистрирован
     partner = db.get_user(partner_id)
     if not partner:
-        err = (
-            "❌ Этот пользователь ещё не зарегистрирован в боте."
-            if lang == "RUS" else
-            "❌ This user is not registered in the bot yet."
-        )
-        await message.answer(err)
+        await message.answer(locale_manager.get_text(lc, "item_trade.partner_not_registered"))
         return
 
     # Проверяем нет ли у партнёра активного обмена
     existing = db.get_active_item_trade_for_user(partner_id)
     if existing:
-        err = (
-            "❌ У этого пользователя уже есть активный обмен. Попробуйте позже."
-            if lang == "RUS" else
-            "❌ This user already has an active trade. Try later."
-        )
-        await message.answer(err)
+        await message.answer(locale_manager.get_text(lc, "item_trade.partner_has_active"))
         return
 
     # Создаём сессию
     trade_id = db.create_item_trade(user_id, partner_id)
     if not trade_id:
-        await message.answer("❌ Ошибка создания обмена." if lang == "RUS" else "❌ Trade creation error.")
+        await message.answer(locale_manager.get_text(lc, "item_trade.creation_error"))
         await state.clear()
         return
 
@@ -401,23 +363,16 @@ async def item_trade_receive_partner(message: Message, state: FSMContext):
     await state.update_data(trade_id=trade_id, partner_id=partner_id)
 
     partner_display = _user_display(partner)
-    if lang == "RUS":
-        await message.answer(
-            f"✅ Приглашение отправлено <b>{partner_display}</b>.\n"
-            f"Ожидаем ответа…",
-            parse_mode="HTML"
-        )
-    else:
-        await message.answer(
-            f"✅ Invitation sent to <b>{partner_display}</b>.\n"
-            f"Waiting for response…",
-            parse_mode="HTML"
-        )
+    await message.answer(
+        locale_manager.get_text(lc, "item_trade.invitation_sent").format(partner=partner_display),
+        parse_mode="HTML"
+    )
 
     # Отправляем приглашение партнёру
     initiator = db.get_user(user_id)
     init_display = _user_display(initiator)
     partner_lang = partner.get("language", "RUS")
+    partner_lc = "ru" if partner_lang == "RUS" else "en"
 
     invite_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
@@ -430,18 +385,7 @@ async def item_trade_receive_partner(message: Message, state: FSMContext):
         ),
     ]])
 
-    if partner_lang == "RUS":
-        invite_text = (
-            f"🔄 <b>Приглашение к обмену</b>\n\n"
-            f"<b>{init_display}</b> хочет обменяться с вами предметами инвентаря.\n\n"
-            f"Принять обмен?"
-        )
-    else:
-        invite_text = (
-            f"🔄 <b>Trade Invitation</b>\n\n"
-            f"<b>{init_display}</b> wants to trade inventory items with you.\n\n"
-            f"Accept the trade?"
-        )
+    invite_text = locale_manager.get_text(partner_lc, "item_trade.invite_text").format(init=init_display)
 
     try:
         await message.bot.send_message(
@@ -450,10 +394,7 @@ async def item_trade_receive_partner(message: Message, state: FSMContext):
     except Exception as e:
         db.cancel_item_trade(trade_id)
         await state.clear()
-        await message.answer(
-            f"❌ Не удалось отправить приглашение: {e}" if lang == "RUS"
-            else f"❌ Could not send invitation: {e}"
-        )
+        await message.answer(locale_manager.get_text(lc, "item_trade.invitation_send_error").format(e=e))
 
 
 # ========== ОТВЕТ НА ПРИГЛАШЕНИЕ ==========
@@ -499,10 +440,8 @@ async def item_trade_accept(callback: CallbackQuery, state: FSMContext):
     init_lang = initiator.get("language", "RUS") if initiator else "RUS"
     partner_display = _user_display(user)
 
-    if init_lang == "RUS":
-        init_text = f"✅ <b>{partner_display}</b> принял обмен!\nТеперь выберите предметы которые хотите предложить."
-    else:
-        init_text = f"✅ <b>{partner_display}</b> accepted the trade!\nNow select items you want to offer."
+    init_lc = "ru" if init_lang == "RUS" else "en"
+    init_text = locale_manager.get_text(init_lc, "item_trade.partner_accepted").format(partner=partner_display)
 
     # Устанавливаем FSM-состояние инициатора через storage напрямую
     from aiogram.fsm.storage.base import StorageKey
@@ -523,10 +462,8 @@ async def item_trade_accept(callback: CallbackQuery, state: FSMContext):
 
     # Показываем партнёру выбор предметов
     items = db.get_unlocked_inventory(user_id)
-    if lang == "RUS":
-        sel_text = "🎒 <b>Выберите предметы для обмена:</b>\n\nОтметьте что хотите предложить партнёру."
-    else:
-        sel_text = "🎒 <b>Select items to trade:</b>\n\nMark what you want to offer."
+    lc = "ru" if lang == "RUS" else "en"
+    sel_text = locale_manager.get_text(lc, "item_trade.select_items")
 
     keyboard = _build_select_keyboard(items, [], {}, trade_id, 0, lang, allow_empty=True)
     await callback.message.answer(sel_text, parse_mode="HTML", reply_markup=keyboard)
@@ -554,20 +491,16 @@ async def item_trade_decline(callback: CallbackQuery, state: FSMContext):
     lang = user.get("language", "RUS") if user else "RUS"
     partner_display = _user_display(user)
 
+    lc = "ru" if lang == "RUS" else "en"
     await callback.message.delete()
-    await callback.answer(
-        "❌ Вы отклонили обмен" if lang == "RUS" else "❌ You declined the trade",
-        show_alert=True
-    )
+    await callback.answer(locale_manager.get_text(lc, "item_trade.you_declined"), show_alert=True)
 
     # Уведомляем инициатора
     initiator_id = trade['initiator_id']
     initiator = db.get_user(initiator_id)
     init_lang = initiator.get("language", "RUS") if initiator else "RUS"
-    if init_lang == "RUS":
-        init_text = f"❌ <b>{partner_display}</b> отклонил обмен."
-    else:
-        init_text = f"❌ <b>{partner_display}</b> declined the trade."
+    init_lc = "ru" if init_lang == "RUS" else "en"
+    init_text = locale_manager.get_text(init_lc, "item_trade.partner_declined").format(partner=partner_display)
     try:
         await callback.bot.send_message(initiator_id, init_text, parse_mode="HTML")
     except Exception:
@@ -576,7 +509,7 @@ async def item_trade_decline(callback: CallbackQuery, state: FSMContext):
 
 # ========== ВЫБОР ПРЕДМЕТОВ ==========
 
-@router.callback_query(F.data.startswith("itr_tog_"))
+@router.callback_query(F.data.startswith("itr_tog_"), ItemTradeStates.selecting_own_items)
 async def item_trade_toggle(callback: CallbackQuery, state: FSMContext):
     """Переключить выбор предмета."""
     parts = callback.data.split("_")
@@ -626,7 +559,7 @@ async def item_trade_toggle(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("itr_inc_"))
+@router.callback_query(F.data.startswith("itr_inc_"), ItemTradeStates.selecting_own_items)
 async def item_trade_inc(callback: CallbackQuery, state: FSMContext):
     """Увеличить количество выбранного предмета."""
     parts = callback.data.split("_")
@@ -660,7 +593,7 @@ async def item_trade_inc(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("itr_dec_"))
+@router.callback_query(F.data.startswith("itr_dec_"), ItemTradeStates.selecting_own_items)
 async def item_trade_dec(callback: CallbackQuery, state: FSMContext):
     """Уменьшить количество выбранного предмета."""
     parts = callback.data.split("_")
@@ -691,7 +624,7 @@ async def item_trade_dec(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("itr_page_"))
+@router.callback_query(F.data.startswith("itr_page_"), ItemTradeStates.selecting_own_items)
 async def item_trade_page(callback: CallbackQuery, state: FSMContext):
     """Листание страниц при выборе предметов."""
     parts = callback.data.split("_")
@@ -820,10 +753,35 @@ async def item_trade_confirm(callback: CallbackQuery, state: FSMContext):
                 initiator_items=_init_items,
                 partner_items=_part_items,
             )
+    lc = "ru" if lang == "RUS" else "en"
+    if trade['initiator_confirmed'] and trade['partner_confirmed']:
+        # Атомарный обмен
+        success = db.execute_item_trade(trade_id)
+        if success:
+            await _notify_trade_success(callback.bot, trade)
+            # Лог: обмен завершён
+            _init = db.get_user(trade['initiator_id'])
+            _part = db.get_user(trade['partner_id'])
+            _init_items = ", ".join(
+                f"{db.get_inventory_item(iid).get('name', str(iid)) if db.get_inventory_item(iid) else str(iid)}"
+                for iid in (trade.get('initiator_items') or [])
+            ) or "—"
+            _part_items = ", ".join(
+                f"{db.get_inventory_item(iid).get('name', str(iid)) if db.get_inventory_item(iid) else str(iid)}"
+                for iid in (trade.get('partner_items') or [])
+            ) or "—"
+            await log_item_trade_complete(
+                callback.bot,
+                initiator_id=trade['initiator_id'],
+                initiator_name=_user_display(_init),
+                partner_id=trade['partner_id'],
+                partner_name=_user_display(_part),
+                initiator_items=_init_items,
+                partner_items=_part_items,
+            )
             try:
                 await callback.message.edit_text(
-                    "✅ <b>Обмен успешно завершён!</b>\nПредметы переданы." if lang == "RUS"
-                    else "✅ <b>Trade completed!</b>\nItems transferred.",
+                    locale_manager.get_text(lc, "item_trade.trade_success"),
                     parse_mode="HTML",
                     reply_markup=None
                 )
@@ -834,8 +792,7 @@ async def item_trade_confirm(callback: CallbackQuery, state: FSMContext):
             await _cancel_trade_notify(callback.bot, trade, user_id)
             try:
                 await callback.message.edit_text(
-                    "❌ <b>Ошибка при выполнении обмена.</b>\nПредметы возвращены." if lang == "RUS"
-                    else "❌ <b>Trade execution error.</b>\nItems returned.",
+                    locale_manager.get_text(lc, "item_trade.trade_error"),
                     parse_mode="HTML",
                     reply_markup=None
                 )
@@ -845,9 +802,7 @@ async def item_trade_confirm(callback: CallbackQuery, state: FSMContext):
         return
 
     # Только один подтвердил — обновляем сводку у обоих
-    await callback.answer(
-        "✅ Вы подтвердили! Ждём партнёра…" if lang == "RUS" else "✅ Confirmed! Waiting for partner…"
-    )
+    await callback.answer(locale_manager.get_text(lc, "item_trade.you_confirmed"))
 
     text = await _review_text(trade, user_id, lang)
     keyboard = _build_review_keyboard(trade_id, True, lang)
@@ -865,11 +820,8 @@ async def item_trade_confirm(callback: CallbackQuery, state: FSMContext):
     partner_text = await _review_text(trade, partner_id, partner_lang)
     partner_keyboard = _build_review_keyboard(trade_id, bool(is_partner_confirmed), partner_lang)
     user_display = _user_display(user)
-    notify = (
-        f"ℹ️ <b>{user_display}</b> подтвердил обмен. Ваша очередь!"
-        if partner_lang == "RUS" else
-        f"ℹ️ <b>{user_display}</b> confirmed the trade. Your turn!"
-    )
+    partner_lc = "ru" if partner_lang == "RUS" else "en"
+    notify = locale_manager.get_text(partner_lc, "item_trade.partner_confirmed").format(user=user_display)
     try:
         await callback.bot.send_message(
             partner_id,
@@ -889,10 +841,8 @@ async def _notify_trade_success(bot, trade: dict):
         partner_id = trade['partner_id'] if uid == trade['initiator_id'] else trade['initiator_id']
         partner = db.get_user(partner_id)
         partner_display = _user_display(partner)
-        if lang == "RUS":
-            text = f"✅ <b>Обмен с {partner_display} завершён!</b>\nПредметы добавлены в ваш инвентарь."
-        else:
-            text = f"✅ <b>Trade with {partner_display} completed!</b>\nItems added to your inventory."
+        lc_uid = "ru" if lang == "RUS" else "en"
+        text = locale_manager.get_text(lc_uid, "item_trade.trade_success_notify").format(partner=partner_display)
         try:
             await bot.send_message(uid, text, parse_mode="HTML")
         except Exception:
@@ -929,10 +879,8 @@ async def item_trade_edit(callback: CallbackQuery, state: FSMContext):
     await state.update_data(trade_id=trade_id, trade_lang=lang, select_page=0, selected_ids=[], qty_map={})
 
     items = db.get_unlocked_inventory(user_id)
-    if lang == "RUS":
-        text = "🎒 <b>Измените ваше предложение:</b>"
-    else:
-        text = "🎒 <b>Edit your offer:</b>"
+    lc = "ru" if lang == "RUS" else "en"
+    text = locale_manager.get_text(lc, "item_trade.edit_offer")
 
     keyboard = _build_select_keyboard(items, [], {}, trade_id, 0, lang, allow_empty=True)
     try:
@@ -945,11 +893,8 @@ async def item_trade_edit(callback: CallbackQuery, state: FSMContext):
     partner = db.get_user(partner_id)
     partner_lang = partner.get("language", "RUS") if partner else "RUS"
     user_display = _user_display(user)
-    notify = (
-        f"✏️ <b>{user_display}</b> изменяет своё предложение. Подтверждения сброшены."
-        if partner_lang == "RUS" else
-        f"✏️ <b>{user_display}</b> is editing their offer. Confirmations reset."
-    )
+    partner_lc = "ru" if partner_lang == "RUS" else "en"
+    notify = locale_manager.get_text(partner_lc, "item_trade.partner_editing").format(user=user_display)
     try:
         await callback.bot.send_message(partner_id, notify, parse_mode="HTML")
     except Exception:
@@ -979,6 +924,7 @@ async def item_trade_cancel(callback: CallbackQuery, state: FSMContext):
 
     user = db.get_user(user_id)
     lang = user.get("language", "RUS") if user else "RUS"
+    lc = "ru" if lang == "RUS" else "en"
 
     # Лог: отмена обмена
     other_id = trade['partner_id'] if trade['initiator_id'] == user_id else trade['initiator_id']
@@ -993,15 +939,13 @@ async def item_trade_cancel(callback: CallbackQuery, state: FSMContext):
 
     try:
         await callback.message.edit_text(
-            "❌ <b>Обмен отменён.</b>" if lang == "RUS" else "❌ <b>Trade cancelled.</b>",
+            locale_manager.get_text(lc, "item_trade.cancelled_message"),
             parse_mode="HTML",
             reply_markup=None
         )
     except Exception:
         pass
-    await callback.answer(
-        "❌ Обмен отменён" if lang == "RUS" else "❌ Trade cancelled"
-    )
+    await callback.answer(locale_manager.get_text(lc, "item_trade.cancelled_alert"))
 
     await _cancel_trade_notify(callback.bot, trade, user_id)
 

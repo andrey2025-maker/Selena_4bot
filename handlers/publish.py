@@ -3,7 +3,7 @@ handlers/publish.py - Система публикации сообщений в 
 """
 
 from aiogram import Router, types, F
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -48,7 +48,7 @@ async def cmd_publish(message: Message, state: FSMContext):
     await state.set_state(PublishStates.waiting_for_publication)
 
 @router.message(F.chat.type == "private", PublishStates.waiting_for_publication)
-async def process_publication(message: Message, state: FSMContext, command: CommandObject = None):
+async def process_publication(message: Message, state: FSMContext):
     """Обработка сообщения для публикации"""
     if not is_admin(message.from_user.id):
         await state.clear()
