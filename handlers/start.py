@@ -332,6 +332,23 @@ async def show_help(message: Message):
         reply_markup=get_main_keyboard(lang)
     )
 
+@router.message(Command("кнопки", "buttons"), F.chat.type == "private")
+async def cmd_refresh_keyboard(message: Message):
+    """Обновление reply-клавиатуры для пользователя"""
+    if message.chat.type != "private":
+        return
+    user_id = message.from_user.id
+    lang = await get_user_language(user_id)
+    lang_code = "ru" if lang == "RUS" else "en"
+
+    text = (
+        "✅ Клавиатура обновлена!"
+        if lang_code == "ru" else
+        "✅ Keyboard updated!"
+    )
+    await message.answer(text, reply_markup=get_main_keyboard(lang))
+
+
 @router.message(Command("language"), F.chat.type == "private")
 async def cmd_language(message: Message):
     """Команда для смены языка"""

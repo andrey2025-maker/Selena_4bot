@@ -484,6 +484,7 @@ async def show_inventory(message: Message, state: FSMContext):
     user_id = message.from_user.id
     user = db.get_user(user_id)
     lang = user.get("language", "RUS") if user else "RUS"
+
     title = _inventory_title(user_id, lang)
     await _send_inventory_page(message, user_id, lang, page=0, bot=message.bot, title=title)
 
@@ -2129,7 +2130,13 @@ async def user_add_pet_start(callback: CallbackQuery, state: FSMContext):
     if lang == "RUS":
         text = (
             "📸 <b>Добавление питомца в инвентарь</b>\n\n"
-            "Отправьте фотографию вашего питомца.\n\n"
+            "🐾 Для добавления питомца вам нужно <b>передать его на аккаунт администратора</b> в игре. "
+            "Это необходимо для безопасного обмена — администратор выступает гарантом сделки, "
+            "чтобы никто никого не обманул.\n\n"
+            "📦 После передачи питомец появится в вашем инвентаре.\n\n"
+            "🔄 Когда захотите забрать питомца обратно или обменяться — нажмите "
+            "<b>«Забрать»</b>, и администратор вернёт его вам в игре.\n\n"
+            "📸 Отправьте фотографию вашего питомца (скриншот из игры).\n"
             "⚠️ Фото должно быть чётким, питомец хорошо виден.\n"
             "Ниже пример правильного фото:"
         )
@@ -2137,7 +2144,13 @@ async def user_add_pet_start(callback: CallbackQuery, state: FSMContext):
     else:
         text = (
             "📸 <b>Add pet to inventory</b>\n\n"
-            "Send a photo of your pet.\n\n"
+            "🐾 To add a pet you need to <b>transfer it to the administrator's account</b> in-game. "
+            "This is required for safe trading — the administrator acts as a guarantor "
+            "so no one gets scammed.\n\n"
+            "📦 After the transfer, the pet will appear in your inventory.\n\n"
+            "🔄 When you want to get your pet back or trade it — press "
+            "<b>«Pick up»</b> and the administrator will return it to you in-game.\n\n"
+            "📸 Send a photo of your pet (in-game screenshot).\n"
             "⚠️ The photo must be clear, the pet should be clearly visible.\n"
             "Below is an example of a correct photo:"
         )
