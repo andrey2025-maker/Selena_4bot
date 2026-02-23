@@ -98,16 +98,30 @@ async def cmd_stop_admin_chat(message: Message, state: FSMContext):
     await message.answer(f"✅ Диалог с пользователем {user_info} завершён.")
 
 
-@router.message(F.chat.type == "private", StateFilter(default_state), IsInActiveChat())
-async def handle_user_to_admin(message: Message):
-    """Пересылка сообщений от пользователя администратору во время активного чата."""
+@router.message(F.chat.type == "private", IsInActiveChat())
+async def handle_user_to_admin(message: Message, state: FSMContext):
+    """Пересылка сообщений от пользователя администратору во время активного чата.
+
+    Фильтр StateFilter(default_state) намеренно убран: пользователь мог иметь
+    незавершённое FSM-состояние (например, после перезапуска бота), и тогда
+    сообщения переставали пересылаться.
+    """
     user_id = message.from_user.id
+
+    # Перепроверяем в БД — на случай рассинхронизации in-memory словаря
+    if user_id not in active_chats:
+        row = db.get_all_active_chats()
+        if user_id in row:
+            active_chats[user_id] = row[user_id]
+        else:
+            return
+
     admin_id = active_chats[user_id]
 
     if message.text and message.text.strip() == "/stop":
-        user_info = f"ID: {user_id}"
         user = db.get_user(user_id)
         lang_code = "ru" if (user.get("language", "RUS") if user else "RUS") == "RUS" else "en"
+        user_info = f"ID: {user_id}"
         if user and user.get("username"):
             user_info += f" (@{user['username']})"
         try:
@@ -119,16 +133,23 @@ async def handle_user_to_admin(message: Message):
             pass
         active_chats.pop(user_id, None)
         db.remove_active_chat(user_id)
+        # Сбрасываем любое FSM-состояние пользователя
+        await state.clear()
         end_msg = "✅ Диалог завершён." if lang_code == "ru" else "✅ Conversation ended."
         await message.answer(end_msg)
         return
 
+    user = db.get_user(user_id)
+    user_info = f"ID: {user_id}"
+    if user and user.get("username"):
+        user_info += f" (@{user['username']})"
+
     try:
-        user_info = f"ID: {user_id}"
-        user = db.get_user(user_id)
-        if user and user.get("username"):
-            user_info += f" (@{user['username']})"
-        await message.forward(admin_id)
+        # Пробуем forward; если запрещён настройками приватности — используем copy_to
+        try:
+            await message.forward(admin_id)
+        except Exception:
+            await message.copy_to(admin_id)
         await message.bot.send_message(
             admin_id,
             f"📨 <b>Сообщение от пользователя:</b>\n{user_info}",

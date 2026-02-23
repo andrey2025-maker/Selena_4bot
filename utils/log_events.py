@@ -8,6 +8,8 @@ from typing import Optional
 from aiogram import Bot
 from aiogram.types import LinkPreviewOptions
 
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,25 @@ async def send_log(bot: Bot, text: str) -> None:
         logger.warning(f"[log_events] Не удалось отправить лог: {e}")
 
 
+async def send_log_photo(bot: Bot, file_id: str, caption: str) -> Optional[str]:
+    """Отправить фото в группу логов. Возвращает стабильный file_id из лог-группы или None."""
+    from config import Config
+    if not Config.LOG_GROUP_ID:
+        return None
+    try:
+        msg = await bot.send_photo(
+            Config.LOG_GROUP_ID,
+            photo=file_id,
+            caption=caption,
+            parse_mode="HTML",
+        )
+        if msg.photo:
+            return msg.photo[-1].file_id
+    except Exception as e:
+        logger.warning(f"[log_events] Не удалось отправить фото в лог: {e}")
+    return None
+
+
 # ─────────────────────────────────────────────
 #  ИНВЕНТАРЬ
 # ─────────────────────────────────────────────
@@ -51,7 +72,12 @@ async def log_inventory_add(
     item_type: str,
     item_name: str,
     quantity: int = 1,
-) -> None:
+    media_file_id: str = None,
+    media_type: str = None,
+) -> Optional[str]:
+    """Залогировать добавление предмета в инвентарь.
+    Для петов с фото — отправляет фото в лог-группу и возвращает стабильный
+    file_id из лог-группы (для сохранения в БД). Иначе возвращает None."""
     type_emoji = {"food": "🍎", "pet": "🐾", "item": "📦"}.get(item_type, "📦")
     qty_str = f" ×{quantity}" if quantity > 1 else ""
     text = (
@@ -61,7 +87,14 @@ async def log_inventory_add(
         f"{type_emoji} Предмет: <b>{item_name}</b>{qty_str}\n"
         f"🕐 {_now()}"
     )
+
+    # Для пета с фото — отправляем фото с подписью, получаем стабильный file_id
+    if item_type == "pet" and media_file_id and media_type == "photo":
+        stable_file_id = await send_log_photo(bot, media_file_id, text)
+        return stable_file_id
+
     await send_log(bot, text)
+    return None
 
 
 async def log_inventory_remove(
@@ -189,14 +222,21 @@ async def log_trade_session_start(
     bot: Bot,
     *,
     user1_id: int,
-    user1_name: str,
+    user1_tg_name: str,
+    user1_roblox: str,
     user2_id: int,
-    user2_name: str,
+    user2_tg_name: str,
+    user2_roblox: str,
 ) -> None:
+    def _entry(uid: int, tg: str, roblox: str) -> str:
+        tg_part = _user_link(uid, tg) if tg else _user_link(uid, f"ID:{uid}")
+        roblox_part = f" (Roblox: <b>{roblox}</b>)" if roblox else ""
+        return f"{tg_part}{roblox_part}"
+
     text = (
         f"💬 <b>Обмен через администратора начат</b>\n"
-        f"👤 {_user_link(user1_id, user1_name)}\n"
-        f"👤 {_user_link(user2_id, user2_name)}\n"
+        f"👤 {_entry(user1_id, user1_tg_name, user1_roblox)}\n"
+        f"👤 {_entry(user2_id, user2_tg_name, user2_roblox)}\n"
         f"🕐 {_now()}"
     )
     await send_log(bot, text)
@@ -208,13 +248,21 @@ async def log_trade_session_stop(
     stopped_by_id: int,
     stopped_by_name: str,
     user1_id: int,
-    user1_name: str,
+    user1_tg_name: str,
+    user1_roblox: str,
     user2_id: int,
-    user2_name: str,
+    user2_tg_name: str,
+    user2_roblox: str,
 ) -> None:
+    def _entry(uid: int, tg: str, roblox: str) -> str:
+        tg_part = _user_link(uid, tg) if tg else _user_link(uid, f"ID:{uid}")
+        roblox_part = f" (Roblox: <b>{roblox}</b>)" if roblox else ""
+        return f"{tg_part}{roblox_part}"
+
     text = (
         f"🛑 <b>Обмен через администратора завершён</b>\n"
-        f"👤 {_user_link(user1_id, user1_name)} ↔ {_user_link(user2_id, user2_name)}\n"
+        f"👤 {_entry(user1_id, user1_tg_name, user1_roblox)}"
+        f" ↔ {_entry(user2_id, user2_tg_name, user2_roblox)}\n"
         f"🧑‍💼 Завершил: {_user_link(stopped_by_id, stopped_by_name, is_admin=True)}\n"
         f"🕐 {_now()}"
     )

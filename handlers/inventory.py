@@ -147,6 +147,10 @@ class AdminInventoryStates(StatesGroup):
     pet_weather = State()             # выбор погоды
     pet_coeff = State()               # ввод коэффициента
     pet_photo = State()               # опциональное фото пета
+    # Передача предметов
+    transfer_selecting = State()      # выбор предметов для передачи
+    transfer_qty_input = State()      # ввод количества для каждого выбранного предмета
+    transfer_recipient = State()      # ввод получателя (тэг или ID)
 
 
 class InventoryPickupStates(StatesGroup):
@@ -335,9 +339,9 @@ async def _send_inventory_page(
     """
     Отправить/обновить страницу инвентаря.
 
-    - Если есть предмет с фото — отправляет фото + текст как подпись.
-    - Пагинация по ITEMS_PER_PAGE предметов.
-    - edit=True — редактировать существующее сообщение (только текст/клавиатура).
+    - Фото берётся из первого медиа-предмета ТЕКУЩЕЙ страницы.
+    - При edit=True с медиа: удаляем старое сообщение и отправляем новое
+      (фото могло смениться при перелистывании).
     - show_actions=False — без кнопок Забрать/Добавить (для группы).
     """
     items = db.get_user_inventory(user_id)
@@ -347,24 +351,45 @@ async def _send_inventory_page(
     if show_actions:
         keyboard = _build_inventory_view_keyboard(lang, page=page, total=total)
     else:
-        # Только пагинация, без действий
         keyboard = _build_group_inventory_keyboard(user_id, lang, page=page, total=total)
 
-    media_item = _first_media_item(items)
+    # Медиа берём только из предметов ТЕКУЩЕЙ страницы
+    start = page * ITEMS_PER_PAGE
+    page_items = items[start: start + ITEMS_PER_PAGE]
+    media_item = _first_media_item(page_items)
+
+    msg_target = target if isinstance(target, Message) else target.message
 
     if edit:
-        # При редактировании просто меняем текст и клавиатуру
-        msg = target if isinstance(target, Message) else target.message
+        msg = msg_target
+        has_media = bool(msg.photo or msg.video or msg.document)
+
+        if has_media:
+            # Удаляем старое сообщение с медиа и отправляем новое —
+            # фото на новой странице может быть другим
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            await _send_inventory_page(
+                target, user_id, lang, page,
+                bot=bot, edit=False, title=title, show_actions=show_actions
+            )
+            return
+
+        # Текстовое сообщение — просто редактируем
         try:
             await msg.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         except Exception:
-            pass
+            # Не удалось отредактировать — отправляем новое
+            await _send_inventory_page(
+                target, user_id, lang, page,
+                bot=bot, edit=False, title=title, show_actions=show_actions
+            )
         return
 
     # Новое сообщение
-    msg_target = target if isinstance(target, Message) else target.message
-
-    if media_item and not edit:
+    if media_item:
         try:
             mtype = media_item.get("media_type", "photo")
             fid = media_item["media_file_id"]
@@ -523,13 +548,22 @@ async def start_pickup_selection(callback: CallbackQuery, state: FSMContext):
     await state.set_state(InventoryStates.selecting_pickup)
     await state.update_data(selected_ids=[], inventory_msg_id=callback.message.message_id)
 
-    if lang == "RUS":
-        text = "🎒 <b>Выберите предметы для выдачи:</b>"
-    else:
-        text = "🎒 <b>Select items to pick up:</b>"
-
+    lc = "ru" if lang == "RUS" else "en"
+    text = locale_manager.get_text(lc, "inventory.select_for_pickup")
     keyboard = _build_pickup_keyboard(items, [], lang)
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+    # Если сообщение содержит медиа (фото/видео) — нельзя edit_text, удаляем и отправляем новое
+    if callback.message.photo or callback.message.video or callback.message.document:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        try:
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
 
@@ -589,7 +623,12 @@ async def back_to_inventory_view(callback: CallbackQuery, state: FSMContext):
     title = _inventory_title(user_id, lang)
 
     await state.clear()
-    await _send_inventory_page(callback, user_id, lang, page=0, edit=True, title=title)
+    # edit=False — отправляем новое сообщение, чтобы корректно показать медиа если оно есть
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await _send_inventory_page(callback, user_id, lang, page=0, edit=False, title=title)
     await callback.answer()
 
 
@@ -1130,6 +1169,7 @@ async def _show_admin_user_inventory(target, user_id: int, edit: bool = False):
     if items:
         keyboard_buttons.append([
             InlineKeyboardButton(text="🗑 Удалить предметы", callback_data=f"inv_adm_del_mode_{user_id}"),
+            InlineKeyboardButton(text="📤 Передать", callback_data=f"inv_adm_transfer_{user_id}"),
         ])
     keyboard_buttons.append([
         InlineKeyboardButton(text="➕ Добавить предмет", callback_data=f"inv_adm_add_{user_id}"),
@@ -1409,6 +1449,407 @@ async def admin_delete_qty_receive(message: Message, state: FSMContext):
     qty_map[str(item_id)] = qty
     await state.update_data(delete_qty_queue=queue[1:], delete_qty_map=qty_map)
     await _ask_delete_qty(message, state)
+
+
+# ========== ПЕРЕДАЧА ПРЕДМЕТОВ АДМИНИСТРАТОРОМ ==========
+
+def _build_admin_transfer_keyboard(items: list, selected_ids: List[int], source_user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура выбора предметов для передачи."""
+    keyboard = []
+    for item in items:
+        item_id = item["id"]
+        checked = item_id in selected_ids
+        mark = "✅" if checked else "☑️"
+        qty = f" x{item['quantity']}" if item.get("quantity", 1) > 1 else ""
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{mark} {item['name']}{qty}",
+                callback_data=f"inv_adm_tr_tog_{item_id}_{source_user_id}"
+            )
+        ])
+    keyboard.append([
+        InlineKeyboardButton(text="✔️ Выбрать все", callback_data=f"inv_adm_tr_all_{source_user_id}"),
+        InlineKeyboardButton(text="🔙 Назад", callback_data=f"inv_adm_view_{source_user_id}"),
+    ])
+    keyboard.append([
+        InlineKeyboardButton(text="➡️ Далее — выбрать получателя", callback_data=f"inv_adm_tr_next_{source_user_id}")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+@router.callback_query(F.data.startswith("inv_adm_transfer_"))
+async def admin_enter_transfer_mode(callback: CallbackQuery, state: FSMContext):
+    """Войти в режим передачи предметов."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+
+    source_user_id = int(callback.data.split("_")[3])
+    items = db.get_user_inventory(source_user_id)
+
+    if not items:
+        await callback.answer("Инвентарь пуст", show_alert=True)
+        return
+
+    await state.set_state(AdminInventoryStates.transfer_selecting)
+    await state.update_data(transfer_selected_ids=[], transfer_source_user_id=source_user_id)
+
+    user = db.get_user(source_user_id)
+    user_display = _user_display(user)
+
+    keyboard = _build_admin_transfer_keyboard(items, [], source_user_id)
+    await callback.message.edit_text(
+        f"📤 <b>Передача предметов из инвентаря {user_display}</b>\n\n"
+        f"Выберите предметы для передачи:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("inv_adm_tr_tog_"), AdminInventoryStates.transfer_selecting)
+async def admin_transfer_toggle_item(callback: CallbackQuery, state: FSMContext):
+    """Переключить выбор предмета для передачи."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    item_id = int(parts[4])
+    source_user_id = int(parts[5])
+
+    data = await state.get_data()
+    selected_ids: List[int] = data.get("transfer_selected_ids", [])
+
+    if item_id in selected_ids:
+        selected_ids.remove(item_id)
+    else:
+        selected_ids.append(item_id)
+
+    await state.update_data(transfer_selected_ids=selected_ids)
+    items = db.get_user_inventory(source_user_id)
+    keyboard = _build_admin_transfer_keyboard(items, selected_ids, source_user_id)
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("inv_adm_tr_all_"), AdminInventoryStates.transfer_selecting)
+async def admin_transfer_select_all(callback: CallbackQuery, state: FSMContext):
+    """Выбрать/снять все предметы для передачи."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+
+    source_user_id = int(callback.data.split("_")[4])
+    items = db.get_user_inventory(source_user_id)
+    data = await state.get_data()
+    selected_ids: List[int] = data.get("transfer_selected_ids", [])
+    all_ids = [item["id"] for item in items]
+
+    selected_ids = [] if set(selected_ids) == set(all_ids) else all_ids
+    await state.update_data(transfer_selected_ids=selected_ids)
+
+    keyboard = _build_admin_transfer_keyboard(items, selected_ids, source_user_id)
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("inv_adm_tr_next_"), AdminInventoryStates.transfer_selecting)
+async def admin_transfer_next(callback: CallbackQuery, state: FSMContext):
+    """Перейти к вводу количества (для еды) или сразу к выбору получателя."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+
+    data = await state.get_data()
+    selected_ids: List[int] = data.get("transfer_selected_ids", [])
+    source_user_id: int = data.get("transfer_source_user_id", 0)
+
+    if not selected_ids:
+        await callback.answer("Выберите хотя бы один предмет", show_alert=True)
+        return
+
+    # Ищем предметы с qty > 1 (нужно спросить сколько передать)
+    items_with_qty = []
+    for iid in selected_ids:
+        item = db.get_inventory_item(iid)
+        if item and item.get("quantity", 1) > 1:
+            items_with_qty.append(item)
+
+    if items_with_qty:
+        await state.set_state(AdminInventoryStates.transfer_qty_input)
+        await state.update_data(
+            transfer_qty_queue=[i["id"] for i in items_with_qty],
+            transfer_qty_map={},
+        )
+        await _ask_transfer_qty(callback.message, state, edit=True)
+    else:
+        # Все предметы по 1 шт — сразу к получателю
+        await state.set_state(AdminInventoryStates.transfer_recipient)
+        await callback.message.edit_text(
+            "📤 <b>Кому передать?</b>\n\n"
+            "Введите @username или ID пользователя.\n"
+            "Для отмены — /cancel",
+            parse_mode="HTML",
+            reply_markup=None
+        )
+    await callback.answer()
+
+
+async def _ask_transfer_qty(target, state: FSMContext, edit: bool = False):
+    """Спросить количество для следующего предмета в очереди передачи."""
+    data = await state.get_data()
+    queue: List[int] = data.get("transfer_qty_queue", [])
+
+    if not queue:
+        # Очередь закончилась — переходим к вводу получателя
+        await state.set_state(AdminInventoryStates.transfer_recipient)
+        msg = target if isinstance(target, Message) else target.message
+        text = (
+            "📤 <b>Кому передать?</b>\n\n"
+            "Введите @username или ID пользователя.\n"
+            "Для отмены — /cancel"
+        )
+        if edit:
+            try:
+                await msg.edit_text(text, parse_mode="HTML", reply_markup=None)
+                return
+            except Exception:
+                pass
+        await msg.answer(text, parse_mode="HTML")
+        return
+
+    item_id = queue[0]
+    item = db.get_inventory_item(item_id)
+    if not item:
+        qty_map = data.get("transfer_qty_map", {})
+        qty_map[str(item_id)] = 1
+        await state.update_data(transfer_qty_queue=queue[1:], transfer_qty_map=qty_map)
+        await _ask_transfer_qty(target, state, edit=edit)
+        return
+
+    max_qty = item.get("quantity", 1)
+    name = item.get("name", "?")
+    text = (
+        f"📤 <b>Сколько передать?</b>\n\n"
+        f"Предмет: <b>{name}</b>\n"
+        f"Доступно: <b>{max_qty}</b> шт.\n\n"
+        f"Введите число от 1 до {max_qty} или <b>все</b> для полной передачи.\n"
+        f"Для отмены — /cancel"
+    )
+    msg = target if isinstance(target, Message) else target.message
+    if edit:
+        try:
+            await msg.edit_text(text, parse_mode="HTML", reply_markup=None)
+            return
+        except Exception:
+            pass
+    await msg.answer(text, parse_mode="HTML")
+
+
+@router.message(AdminInventoryStates.transfer_qty_input)
+async def admin_transfer_qty_receive(message: Message, state: FSMContext):
+    """Получить количество для передаваемого предмета."""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    if message.text and message.text.strip().lower() in ("/cancel", "отмена"):
+        data = await state.get_data()
+        source_user_id = data.get("transfer_source_user_id", 0)
+        await state.clear()
+        await message.answer("🚫 Передача отменена.")
+        if source_user_id:
+            await _show_admin_user_inventory(message, source_user_id)
+        return
+
+    data = await state.get_data()
+    queue: List[int] = data.get("transfer_qty_queue", [])
+    qty_map: dict = data.get("transfer_qty_map", {})
+
+    if not queue:
+        await _ask_transfer_qty(message, state)
+        return
+
+    item_id = queue[0]
+    item = db.get_inventory_item(item_id)
+    max_qty = item.get("quantity", 1) if item else 1
+
+    text = message.text.strip().lower() if message.text else ""
+    if text in ("все", "all"):
+        qty = max_qty
+    else:
+        try:
+            qty = int(text)
+            if qty < 1 or qty > max_qty:
+                await message.answer(f"❌ Введите число от 1 до {max_qty} или «все»")
+                return
+        except ValueError:
+            await message.answer(f"❌ Введите число от 1 до {max_qty} или «все»")
+            return
+
+    qty_map[str(item_id)] = qty
+    await state.update_data(transfer_qty_queue=queue[1:], transfer_qty_map=qty_map)
+    await _ask_transfer_qty(message, state)
+
+
+@router.message(AdminInventoryStates.transfer_recipient)
+async def admin_transfer_recipient_receive(message: Message, state: FSMContext):
+    """Получить получателя и выполнить передачу."""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    if message.text and message.text.strip().lower() in ("/cancel", "отмена"):
+        data = await state.get_data()
+        source_user_id = data.get("transfer_source_user_id", 0)
+        await state.clear()
+        await message.answer("🚫 Передача отменена.")
+        if source_user_id:
+            await _show_admin_user_inventory(message, source_user_id)
+        return
+
+    raw = message.text.strip() if message.text else ""
+    # Пробуем найти пользователя по ID или @username
+    recipient = None
+    if raw.lstrip('-').isdigit():
+        recipient = db.get_user(int(raw))
+    elif raw.startswith('@'):
+        username = raw[1:]
+        all_users = db.get_all_users()
+        recipient = next((u for u in all_users if (u.get("username") or "").lower() == username.lower()), None)
+    else:
+        all_users = db.get_all_users()
+        recipient = next((u for u in all_users if (u.get("username") or "").lower() == raw.lower()), None)
+
+    if not recipient:
+        await message.answer(
+            f"❌ Пользователь <code>{raw}</code> не найден.\n"
+            "Введите @username или ID, или /cancel для отмены.",
+            parse_mode="HTML"
+        )
+        return
+
+    recipient_id = recipient["user_id"]
+    data = await state.get_data()
+    source_user_id: int = data.get("transfer_source_user_id", 0)
+    selected_ids: List[int] = data.get("transfer_selected_ids", [])
+    qty_map: dict = data.get("transfer_qty_map", {})
+
+    if recipient_id == source_user_id:
+        await message.answer("❌ Нельзя передать предметы самому себе.")
+        return
+
+    await state.clear()
+
+    # Выполняем передачу
+    transferred = []
+    errors = []
+    for iid in selected_ids:
+        item = db.get_inventory_item(iid)
+        if not item:
+            continue
+        max_qty = item.get("quantity", 1)
+        qty = int(qty_map.get(str(iid), max_qty))
+        qty = min(qty, max_qty)
+
+        try:
+            if qty >= max_qty:
+                # Передаём всю запись
+                if item.get("item_type") == "food" and not item.get("media_file_id"):
+                    # Для еды без медиа — используем merge через add_inventory_item
+                    db.add_inventory_item(
+                        recipient_id,
+                        item["name"],
+                        description=item.get("description"),
+                        media_file_id=item.get("media_file_id"),
+                        media_type=item.get("media_type"),
+                        quantity=qty,
+                        added_by=message.from_user.id,
+                        item_type=item["item_type"],
+                        pet_income=item.get("pet_income"),
+                        pet_mutation=item.get("pet_mutation"),
+                        pet_weather=item.get("pet_weather"),
+                        pet_coeff=item.get("pet_coeff"),
+                    )
+                    db.remove_inventory_items([iid])
+                else:
+                    conn = db.get_connection()
+                    conn.execute(
+                        "UPDATE inventory_items SET user_id=? WHERE id=?",
+                        (recipient_id, iid)
+                    )
+                    conn.commit()
+                    conn.close()
+            else:
+                # Частичная передача
+                db.reduce_inventory_item_qty(iid, qty)
+                db.add_inventory_item(
+                    recipient_id,
+                    item["name"],
+                    description=item.get("description"),
+                    media_file_id=item.get("media_file_id"),
+                    media_type=item.get("media_type"),
+                    quantity=qty,
+                    added_by=message.from_user.id,
+                    item_type=item["item_type"],
+                    pet_income=item.get("pet_income"),
+                    pet_mutation=item.get("pet_mutation"),
+                    pet_weather=item.get("pet_weather"),
+                    pet_coeff=item.get("pet_coeff"),
+                )
+            transferred.append((item.get("name", str(iid)), qty))
+        except Exception as e:
+            logger.error(f"Transfer item {iid}: {e}")
+            errors.append(item.get("name", str(iid)))
+
+    # Формируем отчёт
+    source_user = db.get_user(source_user_id)
+    recipient_display = _user_display(recipient)
+    source_display = _user_display(source_user)
+
+    if transferred:
+        items_str = "\n".join(f"• {name} x{qty}" for name, qty in transferred)
+        await message.answer(
+            f"✅ <b>Передача выполнена</b>\n\n"
+            f"От: {source_display}\n"
+            f"Кому: {recipient_display}\n\n"
+            f"Предметы:\n{items_str}",
+            parse_mode="HTML"
+        )
+        # Уведомляем получателя
+        try:
+            lang_r = (recipient or {}).get("language", "RUS")
+            notif = (
+                f"📦 Вам переданы предметы от администратора:\n{items_str}"
+                if lang_r == "RUS" else
+                f"📦 Items transferred to you by admin:\n{items_str}"
+            )
+            await message.bot.send_message(recipient_id, notif, parse_mode="HTML")
+        except Exception:
+            pass
+        # Лог
+        try:
+            _adm = message.from_user
+            _src = db.get_user(source_user_id)
+            await log_inventory_remove(
+                message.bot,
+                admin_id=_adm.id,
+                admin_name=_adm.full_name,
+                user_id=source_user_id,
+                user_name=(_src or {}).get("roblox_nick") or (_src or {}).get("username") or str(source_user_id),
+                item_name=", ".join(f"{n} x{q}" for n, q in transferred),
+                quantity=sum(q for _, q in transferred),
+            )
+        except Exception as e:
+            logger.warning(f"Transfer log error: {e}")
+    else:
+        await message.answer("❌ Не удалось передать ни один предмет.")
+
+    if errors:
+        await message.answer(f"⚠️ Ошибка при передаче: {', '.join(errors)}")
+
+    await _show_admin_user_inventory(message, source_user_id)
 
 
 # ========== ДОБАВЛЕНИЕ ПРЕДМЕТОВ АДМИНИСТРАТОРОМ ==========
@@ -1995,9 +2436,9 @@ async def _save_pet_to_db(message_or_callback, state: FSMContext,
             f"✅ Pet added to {user_display}'s inventory:\n<b>{full_name}</b>",
             parse_mode="HTML",
         )
-        # Лог: добавление пета
+        # Лог: добавление пета — для фото возвращает стабильный file_id из лог-группы
         _adm = message_or_callback.from_user
-        await log_inventory_add(
+        stable_file_id = await log_inventory_add(
             bot,
             admin_id=_adm.id,
             admin_name=_adm.full_name,
@@ -2005,7 +2446,14 @@ async def _save_pet_to_db(message_or_callback, state: FSMContext,
             user_name=(user or {}).get("roblox_nick") or (user or {}).get("username") or str(target_user_id),
             item_type="pet",
             item_name=full_name,
+            media_file_id=media_file_id,
+            media_type=media_type,
         )
+        # Если лог-группа вернула стабильный file_id — обновляем запись в БД
+        if stable_file_id and stable_file_id != media_file_id:
+            db.update_inventory_item_media(item_id, stable_file_id, media_type)
+            logger.info(f"Pet {item_id}: media_file_id updated to stable log-group file_id")
+
         notif_lc = "ru" if user_lang == "RUS" else "en"
         notif = locale_manager.get_text(notif_lc, "inventory.pet_added_notification").format(full_name=full_name)
         try:

@@ -185,7 +185,7 @@ def fmt(n: int) -> str:
     return f"{n:,}".replace(",", "\u00a0")
 
 
-@router.message(F.text.startswith('!'), ~F.text.regexp(r'(?i)^!(инв|инвентарь)$'))
+@router.message(F.text.startswith('!'), ~F.text.regexp(r'(?i)^!(инв|инвентарь|петы)$'), ~F.text.regexp(r'(?i)^!пет\s+'))
 async def handle_exclamation_command(message: Message):
     """Обработка команд с !"""
     text = message.text.strip()

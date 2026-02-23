@@ -52,6 +52,22 @@ def _roblox_link(nick: str) -> str:
     return f'<a href="https://www.roblox.com/users/profile?username={nick}">{nick}</a>'
 
 
+def _tg_display(user_data: dict | None, user_id: int) -> str:
+    """Отображаемое имя в Telegram: @username или 'ID:xxx'."""
+    if not user_data:
+        return f"ID:{user_id}"
+    if user_data.get("username"):
+        return f"@{user_data['username']}"
+    return f"ID:{user_id}"
+
+
+def _roblox_nick(user_data: dict | None, user_id: int) -> str:
+    """Roblox-ник пользователя или пустая строка."""
+    if not user_data:
+        return ""
+    return user_data.get("roblox_nick") or ""
+
+
 async def _get_admins(bot: Bot) -> list[int]:
     """Получить список ID администраторов."""
     return ADMIN_IDS
@@ -94,12 +110,27 @@ async def _create_topic(bot: Bot, user1_id: int, user2_id: int, nick1: str, nick
         )
         topic_id = forum_topic.message_thread_id
 
-        link1 = _user_link(user1_id, nick1)
-        link2 = _user_link(user2_id, nick2)
+        _ud1 = db.get_user(user1_id)
+        _ud2 = db.get_user(user2_id)
+        tg1 = _tg_display(_ud1, user1_id)
+        tg2 = _tg_display(_ud2, user2_id)
+        link1 = _user_link(user1_id, tg1)
+        link2 = _user_link(user2_id, tg2)
+        roblox1 = nick1 or _roblox_nick(_ud1, user1_id)
+        roblox2 = nick2 or _roblox_nick(_ud2, user2_id)
+        lang1 = (_ud1 or {}).get("language", "RUS")
+        lang2 = (_ud2 or {}).get("language", "RUS")
+        lang_flag1 = "🇷🇺 RUS" if lang1 == "RUS" else "🇬🇧 EN"
+        lang_flag2 = "🇷🇺 RUS" if lang2 == "RUS" else "🇬🇧 EN"
         header_text = (
-            f"🔄 <b>Обмен между {_roblox_link(nick1)} и {_roblox_link(nick2)}</b>\n\n"
-            f"👤 Участник 1: {link1} (Roblox: {nick1})\n"
-            f"👤 Участник 2: {link2} (Roblox: {nick2})"
+            f"🔄 <b>Обмен между {_roblox_link(roblox1) if roblox1 else tg1}"
+            f" и {_roblox_link(roblox2) if roblox2 else tg2}</b>\n\n"
+            f"👤 Участник 1: {link1}"
+            + (f" (Roblox: {roblox1})" if roblox1 else "")
+            + f" | {lang_flag1}\n"
+            f"👤 Участник 2: {link2}"
+            + (f" (Roblox: {roblox2})" if roblox2 else "")
+            + f" | {lang_flag2}"
         )
         msg = await bot.send_message(
             chat_id=Config.TRADE_ADMIN_GROUP_ID,
@@ -150,11 +181,23 @@ async def _start_trade_dialog(bot: Bot, session_id: int, user1_id: int, user2_id
     await bot.send_message(user1_id, locale_manager.get_text("ru" if lang1 == "RUS" else "en", "trade.trade_started"), parse_mode="HTML")
     await bot.send_message(user2_id, locale_manager.get_text("ru" if lang2 == "RUS" else "en", "trade.trade_started"), parse_mode="HTML")
 
+    _ud1 = db.get_user(user1_id)
+    _ud2 = db.get_user(user2_id)
+    _tg1 = _tg_display(_ud1, user1_id)
+    _tg2 = _tg_display(_ud2, user2_id)
+    _lang1 = (_ud1 or {}).get("language", "RUS")
+    _lang2 = (_ud2 or {}).get("language", "RUS")
+    _flag1 = "🇷🇺 RUS" if _lang1 == "RUS" else "🇬🇧 EN"
+    _flag2 = "🇷🇺 RUS" if _lang2 == "RUS" else "🇬🇧 EN"
     await _notify_admins(
         bot,
         f"🔄 <b>Новый запрос на обмен!</b>\n\n"
-        f"👤 Участник 1: {_user_link(user1_id, nick1)} (Roblox: {nick1})\n"
-        f"👤 Участник 2: {_user_link(user2_id, nick2)} (Roblox: {nick2})\n\n"
+        f"👤 Участник 1: {_user_link(user1_id, _tg1)}"
+        + (f" (Roblox: {nick1})" if nick1 else "")
+        + f" | {_flag1}\n"
+        f"👤 Участник 2: {_user_link(user2_id, _tg2)}"
+        + (f" (Roblox: {nick2})" if nick2 else "")
+        + f" | {_flag2}\n\n"
         f"💬 Диалог ведётся в теме группы обменов.",
     )
 
@@ -449,10 +492,16 @@ async def trade_confirm_yes(callback: CallbackQuery, state: FSMContext, bot: Bot
     bot_id = (await bot.get_me()).id
     await _do_start_trade(bot, state.storage, bot_id,
                           user1_id, user2_id, nick1, nick2, state)
+    _u1 = db.get_user(user1_id)
+    _u2 = db.get_user(user2_id)
     await log_trade_session_start(
         bot,
-        user1_id=user1_id, user1_name=nick1,
-        user2_id=user2_id, user2_name=nick2,
+        user1_id=user1_id,
+        user1_tg_name=_tg_display(_u1, user1_id),
+        user1_roblox=nick1,
+        user2_id=user2_id,
+        user2_tg_name=_tg_display(_u2, user2_id),
+        user2_roblox=nick2,
     )
     await callback.answer()
 
@@ -586,13 +635,18 @@ async def user_stop_trade(message: Message, state: FSMContext, bot: Bot):
     # Лог: завершение обмена пользователем
     _u1 = user_data
     _u2 = db.get_user(partner_id) if partner_id else None
-    _n1 = (_u1 or {}).get("roblox_nick") or (_u1 or {}).get("username") or str(user_id)
-    _n2 = (_u2 or {}).get("roblox_nick") or (_u2 or {}).get("username") or str(partner_id or "?")
+    _stopped_tg = _tg_display(_u1, user_id)
+    _stopped_roblox = _roblox_nick(_u1, user_id)
     await log_trade_session_stop(
         bot,
-        stopped_by_id=user_id, stopped_by_name=_n1,
-        user1_id=user_id, user1_name=_n1,
-        user2_id=partner_id or user_id, user2_name=_n2,
+        stopped_by_id=user_id,
+        stopped_by_name=_stopped_tg,
+        user1_id=user_id,
+        user1_tg_name=_tg_display(_u1, user_id),
+        user1_roblox=_roblox_nick(_u1, user_id),
+        user2_id=partner_id or user_id,
+        user2_tg_name=_tg_display(_u2, partner_id or user_id),
+        user2_roblox=_roblox_nick(_u2, partner_id or user_id),
     )
 
 
@@ -714,14 +768,16 @@ async def admin_stop_trade(message: Message, bot: Bot, state: FSMContext):
     # Лог: завершение обмена администратором
     _u1 = db.get_user(user1_id)
     _u2 = db.get_user(user2_id)
-    _n1 = (_u1 or {}).get("roblox_nick") or (_u1 or {}).get("username") or str(user1_id)
-    _n2 = (_u2 or {}).get("roblox_nick") or (_u2 or {}).get("username") or str(user2_id)
     await log_trade_session_stop(
         bot,
         stopped_by_id=message.from_user.id,
         stopped_by_name=message.from_user.full_name,
-        user1_id=user1_id, user1_name=_n1,
-        user2_id=user2_id, user2_name=_n2,
+        user1_id=user1_id,
+        user1_tg_name=_tg_display(_u1, user1_id),
+        user1_roblox=_roblox_nick(_u1, user1_id),
+        user2_id=user2_id,
+        user2_tg_name=_tg_display(_u2, user2_id),
+        user2_roblox=_roblox_nick(_u2, user2_id),
     )
 
     for uid in [user1_id, user2_id]:

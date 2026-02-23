@@ -568,10 +568,32 @@ class Database:
         pet_weather: str = None,
         pet_coeff: str = None,
     ) -> Optional[int]:
-        """Добавление предмета в инвентарь пользователя. Возвращает id предмета."""
+        """Добавление предмета в инвентарь пользователя. Возвращает id предмета.
+        Для еды (item_type='food') без медиа — объединяет с существующей записью с тем же именем."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # Для еды без медиа — объединяем с существующей записью
+                if item_type == 'food' and not media_file_id:
+                    cursor.execute(
+                        '''SELECT id, quantity FROM inventory_items
+                           WHERE user_id=? AND item_type='food' AND name=?
+                             AND (media_file_id IS NULL OR media_file_id='')
+                             AND (locked_trade_id IS NULL OR locked_trade_id=0)
+                           LIMIT 1''',
+                        (user_id, name)
+                    )
+                    existing = cursor.fetchone()
+                    if existing:
+                        new_qty = existing[1] + quantity
+                        cursor.execute(
+                            'UPDATE inventory_items SET quantity=? WHERE id=?',
+                            (new_qty, existing[0])
+                        )
+                        conn.commit()
+                        logger.info(f"Merged food '{name}' for user {user_id}: +{quantity} → total {new_qty}")
+                        return existing[0]
+
                 cursor.execute('''
                     INSERT INTO inventory_items
                         (user_id, item_type, name, description, media_file_id, media_type,
@@ -586,6 +608,27 @@ class Database:
             except Exception as e:
                 logger.error(f"Error adding inventory item for user {user_id}: {e}")
                 return None
+
+    def update_inventory_item_media(self, item_id: int, media_file_id: str, media_type: str = None) -> bool:
+        """Обновить media_file_id (и media_type) предмета инвентаря."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                if media_type:
+                    cursor.execute(
+                        'UPDATE inventory_items SET media_file_id=?, media_type=? WHERE id=?',
+                        (media_file_id, media_type, item_id)
+                    )
+                else:
+                    cursor.execute(
+                        'UPDATE inventory_items SET media_file_id=? WHERE id=?',
+                        (media_file_id, item_id)
+                    )
+                conn.commit()
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"Error updating media for item {item_id}: {e}")
+                return False
 
     def get_user_inventory(self, user_id: int) -> List[Dict]:
         """Получение всех предметов инвентаря пользователя.
@@ -1190,25 +1233,61 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                # Переносим предметы инициатора → партнёру
-                for iid in init_items:
-                    qty = int(init_qty.get(str(iid), 1))
-                    cursor.execute('SELECT quantity, user_id FROM inventory_items WHERE id=?', (iid,))
+                def _transfer_item(cursor, iid: int, from_uid: int, to_uid: int, qty: int):
+                    """Перенести qty единиц предмета iid от from_uid к to_uid.
+                    Для еды без медиа — объединяет с существующей записью получателя."""
+                    cursor.execute('SELECT quantity, user_id, item_type, name, media_file_id FROM inventory_items WHERE id=?', (iid,))
                     row = cursor.fetchone()
-                    if not row or row[1] != initiator_id:
-                        raise ValueError(f"Item {iid} not owned by initiator")
-                    cur_qty = row[0]
+                    if not row or row[1] != from_uid:
+                        raise ValueError(f"Item {iid} not owned by user {from_uid}")
+                    cur_qty, _, item_type, name, media_file_id = row
+
                     if qty >= cur_qty:
+                        # Передаём всю запись целиком
+                        if item_type == 'food' and not media_file_id:
+                            # Ищем у получателя запись с тем же именем
+                            cursor.execute(
+                                '''SELECT id, quantity FROM inventory_items
+                                   WHERE user_id=? AND item_type='food' AND name=?
+                                     AND (media_file_id IS NULL OR media_file_id='')
+                                     AND id != ?
+                                   LIMIT 1''',
+                                (to_uid, name, iid)
+                            )
+                            existing = cursor.fetchone()
+                            if existing:
+                                cursor.execute(
+                                    'UPDATE inventory_items SET quantity=? WHERE id=?',
+                                    (existing[1] + cur_qty, existing[0])
+                                )
+                                cursor.execute('DELETE FROM inventory_items WHERE id=?', (iid,))
+                                return
                         cursor.execute(
                             'UPDATE inventory_items SET user_id=?, locked_trade_id=NULL WHERE id=?',
-                            (partner_id, iid)
+                            (to_uid, iid)
                         )
                     else:
-                        # Уменьшаем у инициатора, создаём новый у партнёра
+                        # Частичный перенос
                         cursor.execute(
                             'UPDATE inventory_items SET quantity=? WHERE id=?',
                             (cur_qty - qty, iid)
                         )
+                        if item_type == 'food' and not media_file_id:
+                            # Ищем у получателя запись с тем же именем
+                            cursor.execute(
+                                '''SELECT id, quantity FROM inventory_items
+                                   WHERE user_id=? AND item_type='food' AND name=?
+                                     AND (media_file_id IS NULL OR media_file_id='')
+                                   LIMIT 1''',
+                                (to_uid, name)
+                            )
+                            existing = cursor.fetchone()
+                            if existing:
+                                cursor.execute(
+                                    'UPDATE inventory_items SET quantity=? WHERE id=?',
+                                    (existing[1] + qty, existing[0])
+                                )
+                                return
                         cursor.execute('''
                             INSERT INTO inventory_items
                                 (user_id, item_type, name, description, media_file_id, media_type,
@@ -1216,34 +1295,17 @@ class Database:
                             SELECT ?, item_type, name, description, media_file_id, media_type,
                                    ?, user_id, pet_income, pet_mutation, pet_weather, pet_coeff
                             FROM inventory_items WHERE id=?
-                        ''', (partner_id, qty, iid))
+                        ''', (to_uid, qty, iid))
+
+                # Переносим предметы инициатора → партнёру
+                for iid in init_items:
+                    qty = int(init_qty.get(str(iid), 1))
+                    _transfer_item(cursor, iid, initiator_id, partner_id, qty)
 
                 # Переносим предметы партнёра → инициатору
                 for iid in part_items:
                     qty = int(part_qty.get(str(iid), 1))
-                    cursor.execute('SELECT quantity, user_id FROM inventory_items WHERE id=?', (iid,))
-                    row = cursor.fetchone()
-                    if not row or row[1] != partner_id:
-                        raise ValueError(f"Item {iid} not owned by partner")
-                    cur_qty = row[0]
-                    if qty >= cur_qty:
-                        cursor.execute(
-                            'UPDATE inventory_items SET user_id=?, locked_trade_id=NULL WHERE id=?',
-                            (initiator_id, iid)
-                        )
-                    else:
-                        cursor.execute(
-                            'UPDATE inventory_items SET quantity=? WHERE id=?',
-                            (cur_qty - qty, iid)
-                        )
-                        cursor.execute('''
-                            INSERT INTO inventory_items
-                                (user_id, item_type, name, description, media_file_id, media_type,
-                                 quantity, added_by, pet_income, pet_mutation, pet_weather, pet_coeff)
-                            SELECT ?, item_type, name, description, media_file_id, media_type,
-                                   ?, user_id, pet_income, pet_mutation, pet_weather, pet_coeff
-                            FROM inventory_items WHERE id=?
-                        ''', (initiator_id, qty, iid))
+                    _transfer_item(cursor, iid, partner_id, initiator_id, qty)
 
                 # Снимаем блокировку со всех предметов сессии
                 all_ids = init_items + part_items
@@ -1311,6 +1373,66 @@ class Database:
             )
             conn.commit()
         return True
+
+    def get_all_pets_sorted(self) -> List[Dict]:
+        """Получить всех петов из всех инвентарей, отсортированных по доходу (убывание).
+        Доход берётся из поля pet_income (числовая строка вида '1 201 044' или '141685')."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT ii.*, u.username
+                FROM inventory_items ii
+                LEFT JOIN users u ON ii.user_id = u.user_id
+                WHERE ii.item_type = 'pet'
+                ORDER BY
+                    CAST(REPLACE(REPLACE(ii.pet_income, ' ', ''), ',', '') AS REAL) DESC,
+                    ii.created_at ASC
+            ''')
+            return [dict(r) for r in cursor.fetchall()]
+
+    def search_pet_by_income(self, income_value: int) -> dict:
+        """Найти пета по значению дохода.
+        Возвращает dict с ключами:
+          'exact'   — точное совпадение (или None)
+          'nearest' — ближайший по значению (или None)
+          'exact_index' — порядковый номер точного пета в отсортированном списке (1-based, или None)
+          'nearest_index' — порядковый номер ближайшего пета (1-based, или None)
+        """
+        all_pets = self.get_all_pets_sorted()
+        if not all_pets:
+            return {'exact': None, 'nearest': None, 'exact_index': None, 'nearest_index': None}
+
+        def _parse_income(pet: dict) -> int:
+            raw = (pet.get('pet_income') or '').replace(' ', '').replace(',', '')
+            try:
+                return int(float(raw))
+            except (ValueError, TypeError):
+                return 0
+
+        exact = None
+        exact_index = None
+        nearest = None
+        nearest_index = None
+        min_diff = None
+
+        for idx, pet in enumerate(all_pets, 1):
+            val = _parse_income(pet)
+            if val == income_value:
+                if exact is None:
+                    exact = pet
+                    exact_index = idx
+            diff = abs(val - income_value)
+            if min_diff is None or diff < min_diff:
+                min_diff = diff
+                nearest = pet
+                nearest_index = idx
+
+        return {
+            'exact': exact,
+            'nearest': nearest,
+            'exact_index': exact_index,
+            'nearest_index': nearest_index,
+        }
 
     def get_unlocked_inventory(self, user_id: int) -> List[Dict]:
         """Получить предметы инвентаря, не заблокированные в обмене."""

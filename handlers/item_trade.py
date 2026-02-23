@@ -55,6 +55,7 @@ class ItemTradeStates(StatesGroup):
     selecting_own_items   = State()  # участник выбирает свои предметы
     waiting_partner_ready = State()  # ждём пока партнёр тоже выберет
     reviewing             = State()  # просмотр сводки перед подтверждением
+    final_confirm         = State()  # финальное двойное подтверждение
 
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -153,38 +154,29 @@ def _build_select_keyboard(
 
 
 def _build_review_keyboard(trade_id: int, confirmed: bool, lang: str) -> InlineKeyboardMarkup:
-    """Клавиатура подтверждения сделки."""
-    if confirmed:
-        waiting = "⏳ Ожидаем партнёра…" if lang == "RUS" else "⏳ Waiting for partner…"
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=waiting, callback_data="itr_noop")],
-            [InlineKeyboardButton(
-                text="✏️ Изменить предложение" if lang == "RUS" else "✏️ Edit offer",
-                callback_data=f"itr_edit_{trade_id}"
-            )],
-            [InlineKeyboardButton(
-                text="❌ Отменить обмен" if lang == "RUS" else "❌ Cancel trade",
-                callback_data=f"itr_cancel_{trade_id}"
-            )],
-        ])
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
+    """Клавиатура управления в сообщении с кнопками (под сводкой)."""
+    rows = []
+    if not confirmed:
+        rows.append([InlineKeyboardButton(
             text="✅ Подтвердить обмен" if lang == "RUS" else "✅ Confirm trade",
             callback_data=f"itr_confirm_{trade_id}"
-        )],
-        [InlineKeyboardButton(
-            text="✏️ Изменить предложение" if lang == "RUS" else "✏️ Edit offer",
-            callback_data=f"itr_edit_{trade_id}"
-        )],
-        [InlineKeyboardButton(
-            text="❌ Отменить обмен" if lang == "RUS" else "❌ Cancel trade",
-            callback_data=f"itr_cancel_{trade_id}"
-        )],
-    ])
+        )])
+    else:
+        waiting = "⏳ Ожидаем партнёра…" if lang == "RUS" else "⏳ Waiting for partner…"
+        rows.append([InlineKeyboardButton(text=waiting, callback_data="itr_noop")])
+    rows.append([InlineKeyboardButton(
+        text="✏️ Изменить предложение" if lang == "RUS" else "✏️ Edit offer",
+        callback_data=f"itr_edit_{trade_id}"
+    )])
+    rows.append([InlineKeyboardButton(
+        text="❌ Отменить обмен" if lang == "RUS" else "❌ Cancel trade",
+        callback_data=f"itr_cancel_{trade_id}"
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _review_text(trade: dict, user_id: int, lang: str) -> str:
-    """Текст сводки обмена для конкретного участника."""
+    """Текст сводки обмена (только данные, без инструкций — они в отдельном сообщении)."""
     is_init = trade['initiator_id'] == user_id
     my_item_ids = trade['initiator_items'] if is_init else trade['partner_items']
     their_item_ids = trade['partner_items'] if is_init else trade['initiator_items']
@@ -216,9 +208,7 @@ async def _review_text(trade: dict, user_id: int, lang: str) -> str:
             f"📥 <b>{partner_display} предлагает:</b>\n{their_offer}\n\n"
             f"<b>Статус:</b>\n"
             f"  Вы: {my_status}\n"
-            f"  {partner_display}: {their_status}\n\n"
-            f"Нажмите <b>«✅ Подтвердить»</b> когда будете готовы.\n"
-            f"Обмен произойдёт только когда оба подтвердят."
+            f"  {partner_display}: {their_status}"
         )
     else:
         return (
@@ -227,28 +217,207 @@ async def _review_text(trade: dict, user_id: int, lang: str) -> str:
             f"📥 <b>{partner_display} offers:</b>\n{their_offer}\n\n"
             f"<b>Status:</b>\n"
             f"  You: {my_status}\n"
-            f"  {partner_display}: {their_status}\n\n"
-            f"Press <b>«✅ Confirm»</b> when ready.\n"
-            f"Trade happens only when both confirm."
+            f"  {partner_display}: {their_status}"
         )
 
 
-async def _notify_partner_selection_done(bot, trade: dict, done_user_id: int):
-    """Уведомить партнёра, что другой участник завершил выбор."""
+def _controls_text(lang: str) -> str:
+    """Текст сообщения с кнопками управления."""
+    if lang == "RUS":
+        return (
+            "Нажмите <b>«✅ Подтвердить»</b> когда будете готовы.\n"
+            "Обмен произойдёт только когда оба подтвердят."
+        )
+    return (
+        "Press <b>«✅ Confirm»</b> when ready.\n"
+        "Trade happens only when both confirm."
+    )
+
+
+async def _final_confirm_text(trade: dict, user_id: int, lang: str) -> str:
+    """Текст финального подтверждения — показывает что на что меняется."""
+    is_init = trade['initiator_id'] == user_id
+    my_item_ids = trade['initiator_items'] if is_init else trade['partner_items']
+    their_item_ids = trade['partner_items'] if is_init else trade['initiator_items']
+    my_qty = trade['initiator_qty'] if is_init else trade['partner_qty']
+    their_qty = trade['partner_qty'] if is_init else trade['initiator_qty']
+
+    partner_id = trade['partner_id'] if is_init else trade['initiator_id']
+    partner = db.get_user(partner_id)
+    partner_display = _user_display(partner)
+
+    my_items = [db.get_inventory_item(iid) for iid in my_item_ids]
+    my_items = [i for i in my_items if i]
+    their_items = [db.get_inventory_item(iid) for iid in their_item_ids]
+    their_items = [i for i in their_items if i]
+
+    my_offer = _offer_text(my_items, my_qty, lang)
+    their_offer = _offer_text(their_items, their_qty, lang)
+
+    if lang == "RUS":
+        return (
+            f"⚠️ <b>Финальное подтверждение обмена</b>\n\n"
+            f"Вы отдаёте <b>{partner_display}</b>:\n{my_offer}\n\n"
+            f"Вы получаете от <b>{partner_display}</b>:\n{their_offer}\n\n"
+            f"Оба участника должны нажать <b>«✅ Подтвердить»</b> для завершения обмена."
+        )
+    return (
+        f"⚠️ <b>Final trade confirmation</b>\n\n"
+        f"You give to <b>{partner_display}</b>:\n{my_offer}\n\n"
+        f"You receive from <b>{partner_display}</b>:\n{their_offer}\n\n"
+        f"Both participants must press <b>«✅ Confirm»</b> to complete the trade."
+    )
+
+
+def _final_confirm_keyboard(trade_id: int, confirmed: bool, lang: str) -> InlineKeyboardMarkup:
+    """Клавиатура финального подтверждения."""
+    if confirmed:
+        waiting = "⏳ Ожидаем партнёра…" if lang == "RUS" else "⏳ Waiting for partner…"
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=waiting, callback_data="itr_noop")],
+            [InlineKeyboardButton(
+                text="❌ Отменить обмен" if lang == "RUS" else "❌ Cancel trade",
+                callback_data=f"itr_cancel_{trade_id}"
+            )],
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✅ Подтвердить" if lang == "RUS" else "✅ Confirm",
+            callback_data=f"itr_final_{trade_id}"
+        )],
+        [InlineKeyboardButton(
+            text="❌ Отменить обмен" if lang == "RUS" else "❌ Cancel trade",
+            callback_data=f"itr_cancel_{trade_id}"
+        )],
+    ])
+
+
+async def _notify_partner_selection_done(bot, storage, bot_id: int, trade: dict, done_user_id: int):
+    """Уведомить партнёра, что другой участник завершил выбор — обновляем его сводку."""
     partner_id = trade['partner_id'] if trade['initiator_id'] == done_user_id else trade['initiator_id']
     partner = db.get_user(partner_id)
     lang = partner.get("language", "RUS") if partner else "RUS"
+    lc = "ru" if lang == "RUS" else "en"
 
     done_user = db.get_user(done_user_id)
     done_display = _user_display(done_user)
 
-    lc = "ru" if lang == "RUS" else "en"
-    text = locale_manager.get_text(lc, "item_trade.partner_finished_selecting").format(partner=done_display)
+    # Проверяем, завершил ли уже партнёр выбор (есть ли у него review_msg_id)
+    from aiogram.fsm.storage.base import StorageKey
+    key = StorageKey(bot_id=bot_id, chat_id=partner_id, user_id=partner_id)
+    from aiogram.fsm.context import FSMContext
+    partner_fsm = FSMContext(storage=storage, key=key)
+    partner_data = await partner_fsm.get_data()
+    partner_state = await partner_fsm.get_state()
 
+    if partner_state == ItemTradeStates.reviewing:
+        # Партнёр уже в режиме просмотра — обновляем его сводку
+        review_msg_id = partner_data.get("review_msg_id")
+        controls_msg_id = partner_data.get("controls_msg_id")
+        is_partner_confirmed = trade['partner_confirmed'] if trade['initiator_id'] == partner_id else trade['initiator_confirmed']
+        review_text = await _review_text(trade, partner_id, lang)
+        controls_kb = _build_review_keyboard(trade['id'], bool(is_partner_confirmed), lang)
+
+        if review_msg_id:
+            try:
+                await bot.edit_message_text(
+                    chat_id=partner_id, message_id=review_msg_id,
+                    text=review_text, parse_mode="HTML"
+                )
+            except Exception:
+                pass
+        if controls_msg_id:
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=partner_id, message_id=controls_msg_id,
+                    reply_markup=controls_kb
+                )
+            except Exception:
+                pass
+        # Если сообщений нет — отправляем новые
+        if not review_msg_id:
+            notify = locale_manager.get_text(lc, "item_trade.partner_finished_selecting").format(partner=done_display)
+            await _send_review_messages(bot, partner_id, trade, lang, notify_prefix=notify)
+    else:
+        # Партнёр ещё выбирает — просто уведомляем
+        notify = locale_manager.get_text(lc, "item_trade.partner_finished_selecting").format(partner=done_display)
+        try:
+            await bot.send_message(partner_id, notify, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"Could not notify partner {partner_id}: {e}")
+
+
+async def _send_review_messages(bot, user_id: int, trade: dict, lang: str,
+                                 storage=None, bot_id: int = None,
+                                 notify_prefix: str = None) -> tuple[int, int]:
+    """
+    Отправить два сообщения: сводку (без кнопок) + управление (с кнопками).
+    Возвращает (review_msg_id, controls_msg_id).
+    """
+    is_confirmed = False
+    if trade['initiator_id'] == user_id:
+        is_confirmed = bool(trade['initiator_confirmed'])
+    else:
+        is_confirmed = bool(trade['partner_confirmed'])
+
+    review_text = await _review_text(trade, user_id, lang)
+    controls_kb = _build_review_keyboard(trade['id'], is_confirmed, lang)
+    controls_text = _controls_text(lang)
+
+    if notify_prefix:
+        review_text = f"{notify_prefix}\n\n{review_text}"
+
+    review_msg_id = None
+    controls_msg_id = None
     try:
-        await bot.send_message(partner_id, text, parse_mode="HTML")
+        rm = await bot.send_message(user_id, review_text, parse_mode="HTML")
+        review_msg_id = rm.message_id
     except Exception as e:
-        logger.warning(f"Could not notify partner {partner_id}: {e}")
+        logger.warning(f"Could not send review to {user_id}: {e}")
+    try:
+        cm = await bot.send_message(user_id, controls_text, parse_mode="HTML", reply_markup=controls_kb)
+        controls_msg_id = cm.message_id
+    except Exception as e:
+        logger.warning(f"Could not send controls to {user_id}: {e}")
+
+    if storage and bot_id:
+        from aiogram.fsm.storage.base import StorageKey
+        from aiogram.fsm.context import FSMContext
+        key = StorageKey(bot_id=bot_id, chat_id=user_id, user_id=user_id)
+        fsm = FSMContext(storage=storage, key=key)
+        await fsm.update_data(review_msg_id=review_msg_id, controls_msg_id=controls_msg_id)
+
+    return review_msg_id, controls_msg_id
+
+
+async def _update_review_messages(bot, user_id: int, trade: dict, lang: str,
+                                   review_msg_id: int, controls_msg_id: int):
+    """Обновить существующие сообщения сводки и управления."""
+    is_confirmed = False
+    if trade['initiator_id'] == user_id:
+        is_confirmed = bool(trade['initiator_confirmed'])
+    else:
+        is_confirmed = bool(trade['partner_confirmed'])
+
+    review_text = await _review_text(trade, user_id, lang)
+    controls_kb = _build_review_keyboard(trade['id'], is_confirmed, lang)
+
+    if review_msg_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=user_id, message_id=review_msg_id,
+                text=review_text, parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    if controls_msg_id:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=user_id, message_id=controls_msg_id,
+                reply_markup=controls_kb
+            )
+        except Exception:
+            pass
 
 
 async def _cancel_trade_notify(bot, trade: dict, cancelled_by: int):
@@ -464,10 +633,10 @@ async def item_trade_accept(callback: CallbackQuery, state: FSMContext):
     items = db.get_unlocked_inventory(user_id)
     lc = "ru" if lang == "RUS" else "en"
     sel_text = locale_manager.get_text(lc, "item_trade.select_items")
-
     keyboard = _build_select_keyboard(items, [], {}, trade_id, 0, lang, allow_empty=True)
     await callback.message.answer(sel_text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer()
+    return
 
 
 @router.callback_query(F.data.startswith("itr_decline_"))
@@ -689,19 +858,26 @@ async def item_trade_done_selecting(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ItemTradeStates.reviewing)
     await state.update_data(trade_id=trade_id, trade_lang=lang)
 
-    # Уведомляем партнёра
-    await _notify_partner_selection_done(callback.bot, trade, user_id)
-
-    # Показываем сводку
-    trade = db.get_item_trade(trade_id)
-    is_my_confirmed = trade['initiator_confirmed'] if is_init else trade['partner_confirmed']
-    text = await _review_text(trade, user_id, lang)
-    keyboard = _build_review_keyboard(trade_id, bool(is_my_confirmed), lang)
-
+    # Убираем сообщение с выбором предметов
     try:
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+        await callback.message.delete()
     except Exception:
-        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+        pass
+
+    # Отправляем два сообщения: сводку + управление
+    trade = db.get_item_trade(trade_id)
+    bot_id = (await callback.bot.get_me()).id
+    review_msg_id, controls_msg_id = await _send_review_messages(
+        callback.bot, user_id, trade, lang,
+        storage=state.storage, bot_id=bot_id
+    )
+    await state.update_data(review_msg_id=review_msg_id, controls_msg_id=controls_msg_id)
+
+    # Уведомляем партнёра
+    await _notify_partner_selection_done(
+        callback.bot, state.storage, bot_id, trade, user_id
+    )
+
     await callback.answer()
 
 
@@ -709,7 +885,7 @@ async def item_trade_done_selecting(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("itr_confirm_"))
 async def item_trade_confirm(callback: CallbackQuery, state: FSMContext):
-    """Участник подтверждает обмен."""
+    """Участник нажал «Подтвердить» — переходим к финальному экрану."""
     trade_id = int(callback.data.split("_")[2])
     trade = db.get_item_trade(trade_id)
 
@@ -724,113 +900,245 @@ async def item_trade_confirm(callback: CallbackQuery, state: FSMContext):
 
     user = db.get_user(user_id)
     lang = user.get("language", "RUS") if user else "RUS"
-
-    trade = db.set_item_trade_confirmed(trade_id, user_id)
-
-    # Проверяем оба ли подтвердили
-    if trade['initiator_confirmed'] and trade['partner_confirmed']:
-        # Атомарный обмен
-        success = db.execute_item_trade(trade_id)
-        if success:
-            await _notify_trade_success(callback.bot, trade)
-            # Лог: обмен завершён
-            _init = db.get_user(trade['initiator_id'])
-            _part = db.get_user(trade['partner_id'])
-            _init_items = ", ".join(
-                f"{db.get_inventory_item(iid).get('name', str(iid)) if db.get_inventory_item(iid) else str(iid)}"
-                for iid in (trade.get('initiator_items') or [])
-            ) or "—"
-            _part_items = ", ".join(
-                f"{db.get_inventory_item(iid).get('name', str(iid)) if db.get_inventory_item(iid) else str(iid)}"
-                for iid in (trade.get('partner_items') or [])
-            ) or "—"
-            await log_item_trade_complete(
-                callback.bot,
-                initiator_id=trade['initiator_id'],
-                initiator_name=_user_display(_init),
-                partner_id=trade['partner_id'],
-                partner_name=_user_display(_part),
-                initiator_items=_init_items,
-                partner_items=_part_items,
-            )
     lc = "ru" if lang == "RUS" else "en"
-    if trade['initiator_confirmed'] and trade['partner_confirmed']:
-        # Атомарный обмен
-        success = db.execute_item_trade(trade_id)
-        if success:
-            await _notify_trade_success(callback.bot, trade)
-            # Лог: обмен завершён
-            _init = db.get_user(trade['initiator_id'])
-            _part = db.get_user(trade['partner_id'])
-            _init_items = ", ".join(
-                f"{db.get_inventory_item(iid).get('name', str(iid)) if db.get_inventory_item(iid) else str(iid)}"
-                for iid in (trade.get('initiator_items') or [])
-            ) or "—"
-            _part_items = ", ".join(
-                f"{db.get_inventory_item(iid).get('name', str(iid)) if db.get_inventory_item(iid) else str(iid)}"
-                for iid in (trade.get('partner_items') or [])
-            ) or "—"
-            await log_item_trade_complete(
-                callback.bot,
-                initiator_id=trade['initiator_id'],
-                initiator_name=_user_display(_init),
-                partner_id=trade['partner_id'],
-                partner_name=_user_display(_part),
-                initiator_items=_init_items,
-                partner_items=_part_items,
-            )
-            try:
-                await callback.message.edit_text(
-                    locale_manager.get_text(lc, "item_trade.trade_success"),
-                    parse_mode="HTML",
-                    reply_markup=None
-                )
-            except Exception:
-                pass
-        else:
-            db.cancel_item_trade(trade_id)
-            await _cancel_trade_notify(callback.bot, trade, user_id)
-            try:
-                await callback.message.edit_text(
-                    locale_manager.get_text(lc, "item_trade.trade_error"),
-                    parse_mode="HTML",
-                    reply_markup=None
-                )
-            except Exception:
-                pass
-        await callback.answer()
-        return
 
-    # Только один подтвердил — обновляем сводку у обоих
-    await callback.answer(locale_manager.get_text(lc, "item_trade.you_confirmed"))
+    data = await state.get_data()
+    controls_msg_id = data.get("controls_msg_id")
 
-    text = await _review_text(trade, user_id, lang)
-    keyboard = _build_review_keyboard(trade_id, True, lang)
+    # Убираем кнопку подтверждения — показываем ожидание
+    waiting_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="⏳ Ожидаем партнёра…" if lang == "RUS" else "⏳ Waiting for partner…",
+            callback_data="itr_noop"
+        )],
+        [InlineKeyboardButton(
+            text="✏️ Изменить предложение" if lang == "RUS" else "✏️ Edit offer",
+            callback_data=f"itr_edit_{trade_id}"
+        )],
+        [InlineKeyboardButton(
+            text="❌ Отменить обмен" if lang == "RUS" else "❌ Cancel trade",
+            callback_data=f"itr_cancel_{trade_id}"
+        )],
+    ])
     try:
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+        await callback.message.edit_reply_markup(reply_markup=waiting_kb)
     except Exception:
         pass
 
-    # Обновляем сводку у партнёра
+    await callback.answer(locale_manager.get_text(lc, "item_trade.you_confirmed"))
+
+    # Отправляем финальный экран подтверждения этому пользователю
+    bot_id = (await callback.bot.get_me()).id
+    final_text = await _final_confirm_text(trade, user_id, lang)
+    final_kb = _final_confirm_keyboard(trade_id, False, lang)
+    try:
+        final_msg = await callback.bot.send_message(user_id, final_text, parse_mode="HTML", reply_markup=final_kb)
+        await state.update_data(final_msg_id=final_msg.message_id)
+    except Exception as e:
+        logger.warning(f"Could not send final confirm to {user_id}: {e}")
+
+    # Уведомляем партнёра — обновляем его сводку и тоже отправляем финальный экран
     partner_id = trade['partner_id'] if trade['initiator_id'] == user_id else trade['initiator_id']
     partner = db.get_user(partner_id)
     partner_lang = partner.get("language", "RUS") if partner else "RUS"
-    is_partner_confirmed = trade['partner_confirmed'] if trade['initiator_id'] == user_id else trade['initiator_confirmed']
-
-    partner_text = await _review_text(trade, partner_id, partner_lang)
-    partner_keyboard = _build_review_keyboard(trade_id, bool(is_partner_confirmed), partner_lang)
-    user_display = _user_display(user)
     partner_lc = "ru" if partner_lang == "RUS" else "en"
+
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.context import FSMContext as FSMCtx
+    key = StorageKey(bot_id=bot_id, chat_id=partner_id, user_id=partner_id)
+    partner_fsm = FSMCtx(storage=state.storage, key=key)
+    partner_data = await partner_fsm.get_data()
+    partner_state = await partner_fsm.get_state()
+
+    user_display = _user_display(user)
     notify = locale_manager.get_text(partner_lc, "item_trade.partner_confirmed").format(user=user_display)
+
+    if partner_state in (ItemTradeStates.reviewing, ItemTradeStates.final_confirm):
+        # Партнёр уже в режиме просмотра — обновляем его сводку и отправляем финальный экран
+        p_review_msg_id = partner_data.get("review_msg_id")
+        p_controls_msg_id = partner_data.get("controls_msg_id")
+        p_final_msg_id = partner_data.get("final_msg_id")
+
+        # Обновляем сводку партнёра (статус изменился)
+        p_review_text = await _review_text(trade, partner_id, partner_lang)
+        if p_review_msg_id:
+            try:
+                await callback.bot.edit_message_text(
+                    chat_id=partner_id, message_id=p_review_msg_id,
+                    text=p_review_text, parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        # Если финального экрана ещё нет — отправляем
+        if not p_final_msg_id:
+            p_final_text = await _final_confirm_text(trade, partner_id, partner_lang)
+            p_final_kb = _final_confirm_keyboard(trade_id, False, partner_lang)
+            try:
+                pfm = await callback.bot.send_message(
+                    partner_id,
+                    f"{notify}\n\n{p_final_text}",
+                    parse_mode="HTML",
+                    reply_markup=p_final_kb
+                )
+                await partner_fsm.update_data(final_msg_id=pfm.message_id)
+                await partner_fsm.set_state(ItemTradeStates.final_confirm)
+            except Exception as e:
+                logger.warning(f"Could not send final confirm to partner {partner_id}: {e}")
+    else:
+        # Партнёр ещё выбирает — просто уведомляем
+        try:
+            await callback.bot.send_message(partner_id, notify, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"Could not notify partner {partner_id}: {e}")
+
+    await state.set_state(ItemTradeStates.final_confirm)
+
+
+@router.callback_query(F.data.startswith("itr_final_"))
+async def item_trade_final_confirm(callback: CallbackQuery, state: FSMContext):
+    """Финальное подтверждение — оба нажали, выполняем обмен."""
+    trade_id = int(callback.data.split("_")[2])
+    trade = db.get_item_trade(trade_id)
+
+    if not trade or trade['status'] not in ('selecting', 'confirming'):
+        await callback.answer("❌ Обмен недоступен", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    if user_id not in (trade['initiator_id'], trade['partner_id']):
+        await callback.answer("⛔ Не ваш обмен", show_alert=True)
+        return
+
+    user = db.get_user(user_id)
+    lang = user.get("language", "RUS") if user else "RUS"
+    lc = "ru" if lang == "RUS" else "en"
+
+    # Атомарно фиксируем подтверждение
+    trade = db.set_item_trade_confirmed(trade_id, user_id)
+
+    # Показываем ожидание на финальном экране
+    waiting_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="⏳ Ожидаем партнёра…" if lang == "RUS" else "⏳ Waiting for partner…",
+            callback_data="itr_noop"
+        )],
+        [InlineKeyboardButton(
+            text="❌ Отменить обмен" if lang == "RUS" else "❌ Cancel trade",
+            callback_data=f"itr_cancel_{trade_id}"
+        )],
+    ])
     try:
-        await callback.bot.send_message(
-            partner_id,
-            f"{notify}\n\n{partner_text}",
-            parse_mode="HTML",
-            reply_markup=partner_keyboard
+        await callback.message.edit_reply_markup(reply_markup=waiting_kb)
+    except Exception:
+        pass
+    await callback.answer(locale_manager.get_text(lc, "item_trade.you_confirmed"))
+
+    # Проверяем оба ли подтвердили финально
+    if not (trade['initiator_confirmed'] and trade['partner_confirmed']):
+        # Только один подтвердил — уведомляем партнёра
+        partner_id = trade['partner_id'] if trade['initiator_id'] == user_id else trade['initiator_id']
+        partner = db.get_user(partner_id)
+        partner_lang = partner.get("language", "RUS") if partner else "RUS"
+        partner_lc = "ru" if partner_lang == "RUS" else "en"
+        user_display = _user_display(user)
+        notify = locale_manager.get_text(partner_lc, "item_trade.partner_confirmed").format(user=user_display)
+
+        bot_id = (await callback.bot.get_me()).id
+        from aiogram.fsm.storage.base import StorageKey
+        from aiogram.fsm.context import FSMContext as FSMCtx
+        key = StorageKey(bot_id=bot_id, chat_id=partner_id, user_id=partner_id)
+        partner_fsm = FSMCtx(storage=state.storage, key=key)
+        partner_data = await partner_fsm.get_data()
+        p_final_msg_id = partner_data.get("final_msg_id")
+
+        if p_final_msg_id:
+            # Обновляем финальный экран партнёра — убираем кнопку подтверждения
+            p_final_text = await _final_confirm_text(trade, partner_id, partner_lang)
+            p_final_kb = _final_confirm_keyboard(trade_id, False, partner_lang)
+            try:
+                await callback.bot.edit_message_text(
+                    chat_id=partner_id, message_id=p_final_msg_id,
+                    text=f"{notify}\n\n{p_final_text}",
+                    parse_mode="HTML", reply_markup=p_final_kb
+                )
+            except Exception:
+                try:
+                    await callback.bot.send_message(partner_id, f"{notify}\n\n{p_final_text}",
+                                                    parse_mode="HTML", reply_markup=p_final_kb)
+                except Exception:
+                    pass
+        else:
+            try:
+                await callback.bot.send_message(partner_id, notify, parse_mode="HTML")
+            except Exception:
+                pass
+        return
+
+    # Оба подтвердили — выполняем обмен
+    success = db.execute_item_trade(trade_id)
+    if success:
+        # Лог
+        _init = db.get_user(trade['initiator_id'])
+        _part = db.get_user(trade['partner_id'])
+        _init_items = ", ".join(
+            f"{db.get_inventory_item(iid).get('name', str(iid)) if db.get_inventory_item(iid) else str(iid)}"
+            for iid in (trade.get('initiator_items') or [])
+        ) or "—"
+        _part_items = ", ".join(
+            f"{db.get_inventory_item(iid).get('name', str(iid)) if db.get_inventory_item(iid) else str(iid)}"
+            for iid in (trade.get('partner_items') or [])
+        ) or "—"
+        await log_item_trade_complete(
+            callback.bot,
+            initiator_id=trade['initiator_id'],
+            initiator_name=_user_display(_init),
+            partner_id=trade['partner_id'],
+            partner_name=_user_display(_part),
+            initiator_items=_init_items,
+            partner_items=_part_items,
         )
-    except Exception as e:
-        logger.warning(f"Could not update partner review: {e}")
+        await _notify_trade_success(callback.bot, trade)
+        # Обновляем финальный экран у обоих
+        try:
+            await callback.message.edit_text(
+                locale_manager.get_text(lc, "item_trade.trade_success"),
+                parse_mode="HTML", reply_markup=None
+            )
+        except Exception:
+            pass
+        # Обновляем у партнёра
+        partner_id = trade['partner_id'] if trade['initiator_id'] == user_id else trade['initiator_id']
+        partner = db.get_user(partner_id)
+        partner_lang = partner.get("language", "RUS") if partner else "RUS"
+        partner_lc = "ru" if partner_lang == "RUS" else "en"
+        bot_id = (await callback.bot.get_me()).id
+        from aiogram.fsm.storage.base import StorageKey
+        from aiogram.fsm.context import FSMContext as FSMCtx
+        key = StorageKey(bot_id=bot_id, chat_id=partner_id, user_id=partner_id)
+        partner_fsm = FSMCtx(storage=state.storage, key=key)
+        partner_data = await partner_fsm.get_data()
+        p_final_msg_id = partner_data.get("final_msg_id")
+        if p_final_msg_id:
+            try:
+                await callback.bot.edit_message_text(
+                    chat_id=partner_id, message_id=p_final_msg_id,
+                    text=locale_manager.get_text(partner_lc, "item_trade.trade_success"),
+                    parse_mode="HTML", reply_markup=None
+                )
+            except Exception:
+                pass
+        await state.clear()
+    else:
+        db.cancel_item_trade(trade_id)
+        try:
+            await callback.message.edit_text(
+                locale_manager.get_text(lc, "item_trade.trade_error"),
+                parse_mode="HTML", reply_markup=None
+            )
+        except Exception:
+            pass
+        await _cancel_trade_notify(callback.bot, trade, user_id)
 
 
 async def _notify_trade_success(bot, trade: dict):
@@ -875,18 +1183,34 @@ async def item_trade_edit(callback: CallbackQuery, state: FSMContext):
     db.unlock_items_for_trade(old_ids)
     db.update_item_trade_offer(trade_id, user_id, [], {})
 
+    data = await state.get_data()
     await state.set_state(ItemTradeStates.selecting_own_items)
-    await state.update_data(trade_id=trade_id, trade_lang=lang, select_page=0, selected_ids=[], qty_map={})
+    await state.update_data(
+        trade_id=trade_id, trade_lang=lang, select_page=0,
+        selected_ids=[], qty_map={},
+        review_msg_id=None, controls_msg_id=None, final_msg_id=None
+    )
+
+    # Удаляем старые сообщения сводки/управления/финального подтверждения
+    for key_name in ("review_msg_id", "controls_msg_id", "final_msg_id"):
+        mid = data.get(key_name)
+        if mid:
+            try:
+                await callback.bot.delete_message(chat_id=user_id, message_id=mid)
+            except Exception:
+                pass
 
     items = db.get_unlocked_inventory(user_id)
     lc = "ru" if lang == "RUS" else "en"
     text = locale_manager.get_text(lc, "item_trade.edit_offer")
 
     keyboard = _build_select_keyboard(items, [], {}, trade_id, 0, lang, allow_empty=True)
+    # Удаляем текущее сообщение (с кнопками) и отправляем новое
     try:
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+        await callback.message.delete()
     except Exception:
-        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+        pass
+    await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
     # Уведомляем партнёра что предложение изменяется
     partner_id = trade['partner_id'] if is_init else trade['initiator_id']
@@ -895,6 +1219,23 @@ async def item_trade_edit(callback: CallbackQuery, state: FSMContext):
     user_display = _user_display(user)
     partner_lc = "ru" if partner_lang == "RUS" else "en"
     notify = locale_manager.get_text(partner_lc, "item_trade.partner_editing").format(user=user_display)
+
+    # Также удаляем финальный экран у партнёра если был
+    bot_id = (await callback.bot.get_me()).id
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.context import FSMContext as FSMCtx
+    p_key = StorageKey(bot_id=bot_id, chat_id=partner_id, user_id=partner_id)
+    partner_fsm = FSMCtx(storage=state.storage, key=p_key)
+    partner_data = await partner_fsm.get_data()
+    for key_name in ("final_msg_id",):
+        mid = partner_data.get(key_name)
+        if mid:
+            try:
+                await callback.bot.delete_message(chat_id=partner_id, message_id=mid)
+            except Exception:
+                pass
+    await partner_fsm.update_data(final_msg_id=None)
+
     try:
         await callback.bot.send_message(partner_id, notify, parse_mode="HTML")
     except Exception:

@@ -210,6 +210,7 @@ async def show_admin_panel(message_or_callback):
             InlineKeyboardButton(text="🎰 Розыгрыш", callback_data="admin_giveaway_menu"),
         ],
         [
+            InlineKeyboardButton(text="🐾 Петы", callback_data="admin_pets_list"),
             InlineKeyboardButton(text="🎮 Roblox-ники", callback_data="admin_roblox_nicks"),
         ],
         [
