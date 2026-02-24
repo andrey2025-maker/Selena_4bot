@@ -18,6 +18,16 @@ from aiogram.types import (
 
 from database import Database
 from handlers.admin_common import is_admin
+from config import Config
+
+
+def _caller_is_admin(message: Message) -> bool:
+    """True если отправитель — администратор (пользователь или анонимная группа)."""
+    if message.from_user and is_admin(message.from_user.id):
+        return True
+    if message.sender_chat and message.sender_chat.id in Config.ADMIN_GROUP_IDS:
+        return True
+    return False
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -106,10 +116,10 @@ def _pets_page_text(
 
 # ─── Команда !петы ────────────────────────────────────────────────────────────
 
-@router.message(F.text == "!петы", F.chat.type == "private")
+@router.message(F.text == "!петы")
 async def cmd_all_pets(message: Message):
     """!петы — список всех петов, отсортированных по доходу."""
-    if not is_admin(message.from_user.id):
+    if not _caller_is_admin(message):
         return
 
     all_pets = db.get_all_pets_sorted()
@@ -165,10 +175,10 @@ async def pets_noop(callback: CallbackQuery):
 
 # ─── Команда !пет <число> ─────────────────────────────────────────────────────
 
-@router.message(F.text.startswith("!пет "), F.chat.type == "private")
+@router.message(F.text.startswith("!пет "))
 async def cmd_find_pet(message: Message):
     """!пет <число> — найти пета по значению дохода."""
-    if not is_admin(message.from_user.id):
+    if not _caller_is_admin(message):
         return
 
     # Извлекаем число — убираем пробелы внутри числа

@@ -16,6 +16,7 @@ from datetime import datetime
 
 from database import Database
 from handlers.admin_common import ADMIN_IDS
+from config import Config
 
 _db = Database()
 
@@ -25,6 +26,30 @@ logger = logging.getLogger(__name__)
 
 def _is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+def _is_admin_group(chat_id: int) -> bool:
+    """Проверяет, является ли группа (sender_chat) администратором."""
+    return chat_id in Config.ADMIN_GROUP_IDS
+
+
+def _get_caller_id(message: Message) -> int | None:
+    """Возвращает ID отправителя: user_id если обычный пользователь,
+    sender_chat.id если анонимный администратор группы."""
+    if message.from_user:
+        return message.from_user.id
+    if message.sender_chat:
+        return message.sender_chat.id
+    return None
+
+
+def _caller_is_admin(message: Message) -> bool:
+    """True если отправитель — администратор (пользователь или анонимная группа)."""
+    if message.from_user and _is_admin(message.from_user.id):
+        return True
+    if message.sender_chat and _is_admin_group(message.sender_chat.id):
+        return True
+    return False
 
 # ========== МУТАЦИИ И ИХ ПРОЦЕНТЫ ==========
 MUTATIONS = {
@@ -499,12 +524,7 @@ async def _send_inventory_reply(message: Message, target_user_id: int, display_n
 @router.message(F.text.regexp(r'(?i)^!(инв|инвентарь)\s+\S+'))
 async def group_inventory_admin_command(message: Message, state: FSMContext):
     """!инв @username / !инв <id> — только для админов, смотреть чужой инвентарь."""
-    if not message.from_user:
-        await message.reply("❌ Команда недоступна от имени группы.")
-        return
-
-    caller_id = message.from_user.id
-    if not _is_admin(caller_id):
+    if not _caller_is_admin(message):
         await message.reply("⛔ Только администраторы могут смотреть чужой инвентарь.")
         return
 
@@ -535,7 +555,8 @@ async def group_inventory_command(message: Message, state: FSMContext):
     """!инв / !инвентарь — показать свой инвентарь в группе с пагинацией."""
     if not message.from_user:
         await message.reply(
-            "❌ Напишите команду от своего аккаунта, а не от имени группы."
+            "❌ Укажите пользователя: <code>!инв @username</code> или <code>!инв ID</code>",
+            parse_mode="HTML"
         )
         return
 
