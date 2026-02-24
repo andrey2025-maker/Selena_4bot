@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 db = Database()
 
-from handlers.admin_common import ADMIN_IDS, is_admin
+from handlers.admin_common import ADMIN_IDS, is_admin, user_link
 
 
 # ========== FSM ==========
@@ -52,13 +52,13 @@ def _roblox_link(nick: str) -> str:
     return f'<a href="https://www.roblox.com/users/profile?username={nick}">{nick}</a>'
 
 
-def _tg_display(user_data: dict | None, user_id: int) -> str:
-    """Отображаемое имя в Telegram: @username или 'ID:xxx'."""
-    if not user_data:
-        return f"ID:{user_id}"
-    if user_data.get("username"):
-        return f"@{user_data['username']}"
-    return f"ID:{user_id}"
+def _tg_display(user_data: dict | None, user_id: int, for_admin: bool = False) -> str:
+    """
+    Отображаемое имя в Telegram.
+    for_admin=False → псевдоним если скрыт (публичное отображение)
+    for_admin=True  → реальные данные (@username или ID:xxx)
+    """
+    return db.get_display_name(user_id, for_admin=for_admin)
 
 
 def _roblox_nick(user_data: dict | None, user_id: int) -> str:
@@ -112,8 +112,8 @@ async def _create_topic(bot: Bot, user1_id: int, user2_id: int, nick1: str, nick
 
         _ud1 = db.get_user(user1_id)
         _ud2 = db.get_user(user2_id)
-        tg1 = _tg_display(_ud1, user1_id)
-        tg2 = _tg_display(_ud2, user2_id)
+        tg1 = _tg_display(_ud1, user1_id, for_admin=True)
+        tg2 = _tg_display(_ud2, user2_id, for_admin=True)
         link1 = _user_link(user1_id, tg1)
         link2 = _user_link(user2_id, tg2)
         roblox1 = nick1 or _roblox_nick(_ud1, user1_id)
@@ -183,8 +183,8 @@ async def _start_trade_dialog(bot: Bot, session_id: int, user1_id: int, user2_id
 
     _ud1 = db.get_user(user1_id)
     _ud2 = db.get_user(user2_id)
-    _tg1 = _tg_display(_ud1, user1_id)
-    _tg2 = _tg_display(_ud2, user2_id)
+    _tg1 = _tg_display(_ud1, user1_id, for_admin=True)
+    _tg2 = _tg_display(_ud2, user2_id, for_admin=True)
     _lang1 = (_ud1 or {}).get("language", "RUS")
     _lang2 = (_ud2 or {}).get("language", "RUS")
     _flag1 = "🇷🇺 RUS" if _lang1 == "RUS" else "🇬🇧 EN"
@@ -497,10 +497,10 @@ async def trade_confirm_yes(callback: CallbackQuery, state: FSMContext, bot: Bot
     await log_trade_session_start(
         bot,
         user1_id=user1_id,
-        user1_tg_name=_tg_display(_u1, user1_id),
+        user1_tg_name=_tg_display(_u1, user1_id, for_admin=True),
         user1_roblox=nick1,
         user2_id=user2_id,
-        user2_tg_name=_tg_display(_u2, user2_id),
+        user2_tg_name=_tg_display(_u2, user2_id, for_admin=True),
         user2_roblox=nick2,
     )
     await callback.answer()
@@ -629,23 +629,22 @@ async def user_stop_trade(message: Message, state: FSMContext, bot: Bot):
 
     # Уведомляем в топик
     if topic_id:
-        user_display = f"@{user_data['username']}" if user_data and user_data.get("username") else f"ID: {user_id}"
-        await _send_to_topic(bot, topic_id, f"🔴 <b>Обмен завершён участником {user_display}.</b>")
+        await _send_to_topic(bot, topic_id, f"🔴 <b>Обмен завершён участником {user_link(user_id, user_data)}.</b>")
 
     # Лог: завершение обмена пользователем
     _u1 = user_data
     _u2 = db.get_user(partner_id) if partner_id else None
-    _stopped_tg = _tg_display(_u1, user_id)
+    _stopped_tg = _tg_display(_u1, user_id, for_admin=True)
     _stopped_roblox = _roblox_nick(_u1, user_id)
     await log_trade_session_stop(
         bot,
         stopped_by_id=user_id,
         stopped_by_name=_stopped_tg,
         user1_id=user_id,
-        user1_tg_name=_tg_display(_u1, user_id),
+        user1_tg_name=_tg_display(_u1, user_id, for_admin=True),
         user1_roblox=_roblox_nick(_u1, user_id),
         user2_id=partner_id or user_id,
-        user2_tg_name=_tg_display(_u2, partner_id or user_id),
+        user2_tg_name=_tg_display(_u2, partner_id or user_id, for_admin=True),
         user2_roblox=_roblox_nick(_u2, partner_id or user_id),
     )
 
@@ -773,10 +772,10 @@ async def admin_stop_trade(message: Message, bot: Bot, state: FSMContext):
         stopped_by_id=message.from_user.id,
         stopped_by_name=message.from_user.full_name,
         user1_id=user1_id,
-        user1_tg_name=_tg_display(_u1, user1_id),
+        user1_tg_name=_tg_display(_u1, user1_id, for_admin=True),
         user1_roblox=_roblox_nick(_u1, user1_id),
         user2_id=user2_id,
-        user2_tg_name=_tg_display(_u2, user2_id),
+        user2_tg_name=_tg_display(_u2, user2_id, for_admin=True),
         user2_roblox=_roblox_nick(_u2, user2_id),
     )
 
@@ -878,11 +877,11 @@ async def trade_open_inventory(callback: CallbackQuery, bot: Bot):
     user_data = db.get_user(target_user_id)
     nick = db.get_roblox_nick(target_user_id)
 
-    display = f"@{user_data['username']}" if user_data and user_data.get("username") else f"ID: {target_user_id}"
+    display = user_link(target_user_id, user_data)
     roblox_display = f" (Roblox: @{nick})" if nick else ""
 
     if not items:
-        await callback.message.answer(f"📦 Инвентарь {display}{roblox_display} пуст.")
+        await callback.message.answer(f"📦 Инвентарь {display}{roblox_display} пуст.", parse_mode="HTML")
         return
 
     text = f"📦 <b>Инвентарь {display}{roblox_display}:</b>\n\n"
@@ -894,4 +893,4 @@ async def trade_open_inventory(callback: CallbackQuery, bot: Bot):
             text += f" — {item['description']}"
         text += "\n"
 
-    await callback.message.answer(text)
+    await callback.message.answer(text, parse_mode="HTML")

@@ -13,6 +13,7 @@ import os
 from backup_utils import backup_manager
 from handlers.admin_common import is_admin
 from config import Config
+from utils.log_events import log_admin_action
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -115,6 +116,17 @@ async def create_backup_handler(callback: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка отправки бэкапа: {e}")
         await callback.message.edit_text(f"✅ Бэкап создан, но не отправлен: {e}")
+
+    try:
+        await log_admin_action(
+            callback.bot,
+            admin_id=callback.from_user.id,
+            admin_name=callback.from_user.full_name,
+            action="Создан бэкап БД",
+            details=f"Тип: {backup_type_name}, файл: {os.path.basename(backup_path)}",
+        )
+    except Exception:
+        pass
 
 
 # ========== CALLBACK: СПИСОК БЭКАПОВ ==========

@@ -14,6 +14,7 @@ import logging
 from config import Config
 from utils.messages import locale_manager
 from handlers.admin_common import db, is_admin, ADMIN_IDS, active_chats
+from utils.log_events import log_admin_action
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -23,6 +24,11 @@ USER_PER_PAGE = 10
 
 class AdminSearchStates(StatesGroup):
     waiting_for_query = State()
+
+
+class AdminHiddenStates(StatesGroup):
+    waiting_for_user_id = State()   # ввод @username или ID
+    waiting_for_alias   = State()   # ввод псевдонима
 
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -215,6 +221,7 @@ async def show_admin_panel(message_or_callback):
         ],
         [
             InlineKeyboardButton(text="💾 Бэкапы", callback_data="admin_backup_menu"),
+            InlineKeyboardButton(text="🕵️ Скрыть", callback_data="admin_hidden_menu"),
         ],
         [
             InlineKeyboardButton(text="ℹ️ О боте", callback_data="admin_about"),
@@ -428,8 +435,29 @@ async def admin_cleanup_callback(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ У вас нет прав администратора", show_alert=True)
         return
-    await callback.answer("🧹 Функция в разработке")
-    await callback.message.answer("🧹 Очистка базы будет доступна в следующем обновлении.")
+    await callback.answer("🧹 Запускаю очистку…")
+    try:
+        result = db.cleanup_old_data(days=14)
+        total = sum(result.values())
+        details = ", ".join(f"{k}: {v}" for k, v in result.items() if v > 0) or "нечего удалять"
+        await callback.message.answer(
+            f"🧹 <b>Очистка завершена</b>\n"
+            f"Удалено записей: <b>{total}</b>\n"
+            f"<i>{details}</i>",
+            parse_mode="HTML",
+        )
+        try:
+            await log_admin_action(
+                callback.bot,
+                admin_id=callback.from_user.id,
+                admin_name=callback.from_user.full_name,
+                action="Ручная очистка БД",
+                details=f"Удалено {total} записей ({details})",
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        await callback.message.answer(f"❌ Ошибка очистки: {e}")
 
 @router.callback_query(F.data == "admin_utils")
 async def admin_utils_callback(callback: types.CallbackQuery):
@@ -494,4 +522,242 @@ async def admin_detailed_stats_callback(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="📊 Назад к статистике", callback_data="admin_stats")]
     ])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
+
+
+# ═══════════════════════════════════════════════════════════════
+# РАЗДЕЛ «СКРЫТЬ» — псевдонимы для публичного отображения
+# ═══════════════════════════════════════════════════════════════
+
+def _hidden_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➕ Добавить", callback_data="admin_hidden_add"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data="admin_hidden_del"),
+        ],
+        [InlineKeyboardButton(text="📋 Список", callback_data="admin_hidden_list")],
+        [InlineKeyboardButton(text="🛠️ Назад", callback_data="admin_panel")],
+    ])
+
+
+@router.callback_query(F.data == "admin_hidden_menu")
+async def admin_hidden_menu(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+    hidden = db.get_all_hidden_users()
+    count = len(hidden)
+    text = (
+        "🕵️ <b>Скрытые пользователи</b>\n\n"
+        f"Скрыто: <b>{count}</b>\n\n"
+        "Скрытые пользователи отображаются под псевдонимом в инвентаре, "
+        "P2P-обменах и обменах через администратора.\n"
+        "Логи и данные для администраторов остаются без изменений."
+    )
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=_hidden_menu_keyboard())
+    except Exception:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=_hidden_menu_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_hidden_list")
+async def admin_hidden_list(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+    hidden = db.get_all_hidden_users()
+    if not hidden:
+        text = "🕵️ <b>Скрытые пользователи</b>\n\nСписок пуст."
+    else:
+        lines = ["🕵️ <b>Скрытые пользователи:</b>\n"]
+        for h in hidden:
+            uid = h["user_id"]
+            user = db.get_user(uid)
+            real = f"@{user['username']}" if user and user.get("username") else f"ID:{uid}"
+            lines.append(f"• <a href=\"tg://user?id={uid}\">{real}</a> → «{h['alias']}»")
+        text = "\n".join(lines)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_hidden_menu")]
+    ])
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard,
+                                         disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard,
+                                      disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_hidden_add")
+async def admin_hidden_add_start(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+    await state.set_state(AdminHiddenStates.waiting_for_user_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_hidden_cancel")]
+    ])
+    await callback.message.answer(
+        "🕵️ <b>Добавить скрытого пользователя</b>\n\n"
+        "Введите <b>@username</b> или <b>числовой ID</b> пользователя:",
+        parse_mode="HTML", reply_markup=keyboard,
+    )
+    await callback.answer()
+
+
+@router.message(StateFilter(AdminHiddenStates.waiting_for_user_id))
+async def admin_hidden_receive_user(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    text = (message.text or "").strip()
+    # Ищем пользователя
+    if text.startswith("@"):
+        user = db.get_user_by_username(text[1:])
+    elif text.lstrip("-").isdigit():
+        user = db.get_user(int(text))
+    else:
+        user = db.get_user_by_username(text)
+
+    if not user:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_hidden_cancel")]
+        ])
+        await message.answer(
+            f"❌ Пользователь <code>{text}</code> не найден.\nПопробуйте ещё раз:",
+            parse_mode="HTML", reply_markup=keyboard,
+        )
+        return
+
+    uid = user["user_id"]
+    real = f"@{user['username']}" if user.get("username") else f"ID:{uid}"
+    await state.update_data(target_user_id=uid, target_real=real)
+    await state.set_state(AdminHiddenStates.waiting_for_alias)
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_hidden_cancel")]
+    ])
+    await message.answer(
+        f"✅ Найден: <a href=\"tg://user?id={uid}\">{real}</a>\n\n"
+        "Введите <b>псевдоним</b>, который будет показываться вместо имени:",
+        parse_mode="HTML", reply_markup=keyboard,
+    )
+
+
+@router.message(StateFilter(AdminHiddenStates.waiting_for_alias))
+async def admin_hidden_receive_alias(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    alias = (message.text or "").strip()
+    if not alias:
+        await message.answer("❌ Псевдоним не может быть пустым. Введите ещё раз:")
+        return
+
+    data = await state.get_data()
+    uid = data["target_user_id"]
+    real = data["target_real"]
+
+    db.add_hidden_user(uid, alias, added_by=message.from_user.id)
+    await state.clear()
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🕵️ К списку скрытых", callback_data="admin_hidden_menu")]
+    ])
+    await message.answer(
+        f"✅ <b>Пользователь скрыт</b>\n\n"
+        f"Кто: <a href=\"tg://user?id={uid}\">{real}</a>\n"
+        f"Псевдоним: «{alias}»\n\n"
+        f"Теперь в публичных местах вместо имени будет отображаться «{alias}».",
+        parse_mode="HTML", reply_markup=keyboard,
+    )
+    try:
+        await log_admin_action(
+            message.bot,
+            admin_id=message.from_user.id,
+            admin_name=message.from_user.full_name,
+            action="Скрыть пользователя",
+            details=f"{real} (ID:{uid}) → псевдоним «{alias}»",
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "admin_hidden_del")
+async def admin_hidden_del_start(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+    hidden = db.get_all_hidden_users()
+    if not hidden:
+        await callback.answer("Список скрытых пуст.", show_alert=True)
+        return
+
+    rows = []
+    for h in hidden:
+        uid = h["user_id"]
+        user = db.get_user(uid)
+        real = f"@{user['username']}" if user and user.get("username") else f"ID:{uid}"
+        rows.append([InlineKeyboardButton(
+            text=f"🗑 {real} → «{h['alias']}»",
+            callback_data=f"admin_hidden_remove_{uid}",
+        )])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_hidden_menu")])
+
+    await callback.message.answer(
+        "🗑 <b>Выберите пользователя для удаления из скрытых:</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_hidden_remove_"))
+async def admin_hidden_remove(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+    uid = int(callback.data.split("_")[-1])
+    hidden = db.get_hidden_user(uid)
+    alias = hidden["alias"] if hidden else "?"
+    user = db.get_user(uid)
+    real = f"@{user['username']}" if user and user.get("username") else f"ID:{uid}"
+
+    db.remove_hidden_user(uid)
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🕵️ К списку скрытых", callback_data="admin_hidden_menu")]
+    ])
+    try:
+        await callback.message.edit_text(
+            f"✅ <a href=\"tg://user?id={uid}\">{real}</a> удалён из скрытых.\n"
+            f"Псевдоним «{alias}» больше не используется.",
+            parse_mode="HTML", reply_markup=keyboard,
+        )
+    except Exception:
+        await callback.message.answer(
+            f"✅ {real} удалён из скрытых.", parse_mode="HTML", reply_markup=keyboard,
+        )
+    await callback.answer()
+    try:
+        await log_admin_action(
+            callback.bot,
+            admin_id=callback.from_user.id,
+            admin_name=callback.from_user.full_name,
+            action="Раскрыть пользователя",
+            details=f"{real} (ID:{uid}), был псевдоним «{alias}»",
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "admin_hidden_cancel")
+async def admin_hidden_cancel(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🕵️ К скрытым", callback_data="admin_hidden_menu")]
+    ])
+    try:
+        await callback.message.edit_text("❌ Отменено.", reply_markup=keyboard)
+    except Exception:
+        await callback.message.answer("❌ Отменено.", reply_markup=keyboard)
     await callback.answer()

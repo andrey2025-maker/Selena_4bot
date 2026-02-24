@@ -6,14 +6,16 @@ handlers/admin_chat.py — Двусторонняя связь с пользов
 from aiogram import Router, types, F
 from utils.log_events import (
     log_exception_added, log_exception_removed, log_roblox_nick_changed,
+    log_admin_action,
 )
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 import logging
 
+from config import Config
 from handlers.admin_common import (
-    db, is_admin, active_chats,
+    db, is_admin, active_chats, _get_admin_id,
     ChatStates, RobloxNickStates,
 )
 
@@ -93,7 +95,7 @@ async def process_user_selection(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    input_text = message.text.strip()
+    input_text = message.text.strip() if message.text else ""
     if input_text == "/cancel":
         await message.answer("🚫 Операция отменена")
         await state.clear()
@@ -120,11 +122,67 @@ async def process_user_selection(message: Message, state: FSMContext):
         return
 
     user_id = user["user_id"]
-    admin_id = message.from_user.id
-    active_chats[user_id] = admin_id
-    db.set_active_chat(user_id, admin_id)  # сохраняем в БД
+    if user.get("username"):
+        user_info = f'<a href="tg://user?id={user_id}">@{user["username"]}</a>'
+    else:
+        user_info = f'<a href="tg://user?id={user_id}">ID: {user_id}</a>'
 
-    lang_code = "ru" if user.get("language", "RUS") == "RUS" else "en"
+    # Сохраняем выбранного пользователя и предлагаем выбрать канал
+    await state.update_data(chat_with_user=user_id, chat_user_info=user_info)
+
+    if Config.CHAT_ADMIN_GROUP_ID:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💬 В боте", callback_data="chat_channel_bot"),
+                InlineKeyboardButton(text="👥 В группе (топик)", callback_data="chat_channel_group"),
+            ],
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="chat_channel_cancel")],
+        ])
+        await message.answer(
+            f"👤 Пользователь: <b>{user_info}</b>\n\n"
+            "Где вести переписку?",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        await state.set_state(ChatStates.choosing_channel)
+    else:
+        # Группа не настроена — сразу запускаем чат в боте
+        await _start_bot_chat(message, state, user, user_id, user_info)
+
+
+@router.callback_query(ChatStates.choosing_channel, F.data.in_({"chat_channel_bot", "chat_channel_group", "chat_channel_cancel"}))
+async def choose_chat_channel(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        await state.clear()
+        return
+
+    if callback.data == "chat_channel_cancel":
+        await callback.message.edit_text("🚫 Операция отменена")
+        await state.clear()
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    user_id = data.get("chat_with_user")
+    user_info = data.get("chat_user_info", str(user_id))
+    user = db.get_user(user_id)
+
+    await callback.answer()
+
+    if callback.data == "chat_channel_bot":
+        await callback.message.edit_text(f"💬 Запускаю чат с {user_info}…", parse_mode="HTML")
+        await _start_bot_chat(callback.message, state, user, user_id, user_info)
+    else:
+        await callback.message.edit_text(f"👥 Создаю топик для {user_info}…", parse_mode="HTML")
+        await _start_group_chat(callback.message, state, user, user_id, user_info, callback.bot)
+
+
+async def _start_bot_chat(target: Message, state: FSMContext, user: dict, user_id: int, user_info: str):
+    """Запустить чат через ЛС бота (старое поведение)."""
+    admin_id = target.from_user.id if hasattr(target, 'from_user') else (await state.get_data()).get('admin_id')
+
+    lang_code = "ru" if (user or {}).get("language", "RUS") == "RUS" else "en"
     notification = (
         "👤 <b>С Вами связался администратор</b>"
         if lang_code == "ru"
@@ -132,31 +190,150 @@ async def process_user_selection(message: Message, state: FSMContext):
     )
 
     try:
-        await message.bot.send_message(user_id, notification, parse_mode="HTML")
+        await target.bot.send_message(user_id, notification, parse_mode="HTML")
     except Exception as e:
-        await message.answer(f"❌ Не удалось отправить уведомление пользователю: {e}")
+        await target.answer(f"❌ Не удалось отправить уведомление пользователю: {e}")
         active_chats.pop(user_id, None)
         db.remove_active_chat(user_id)
         await state.clear()
         return
 
-    user_info = f"ID: {user_id}"
-    if user.get("username"):
-        user_info += f" (@{user['username']})"
+    active_chats[user_id] = {"admin_id": admin_id, "mode": "bot", "topic_id": None}
+    db.set_active_chat(user_id, admin_id)
 
-    await message.answer(
+    await target.answer(
         f"✅ Чат начат с пользователем {user_info}\n\n"
         "Все ваши сообщения будут пересылаться пользователю.\n"
         "Для завершения диалога отправьте /stop\n\n"
-        "Напишите первое сообщение:"
+        "Напишите первое сообщение:",
+        parse_mode="HTML",
     )
     await state.set_state(ChatStates.chatting)
     await state.update_data(chat_with_user=user_id)
 
+    try:
+        await log_admin_action(
+            target.bot,
+            admin_id=admin_id,
+            admin_name=target.from_user.full_name if hasattr(target, 'from_user') else "Админ",
+            action="Открыт чат с пользователем (бот)",
+            details=user_info,
+        )
+    except Exception:
+        pass
+
+
+async def _start_group_chat(target: Message, state: FSMContext, user: dict, user_id: int, user_info: str, bot):
+    """Запустить чат через топик группы."""
+    from aiogram import Bot as AiogramBot
+    admin_id = target.from_user.id if hasattr(target, 'from_user') else (await state.get_data()).get('admin_id')
+
+    if not Config.CHAT_ADMIN_GROUP_ID:
+        await target.answer("❌ Группа для чатов не настроена (CHAT_ADMIN_GROUP_ID).")
+        await state.clear()
+        return
+
+    # Ищем существующий топик
+    existing_topic_id = db.get_chat_topic(user_id)
+    topic_id = existing_topic_id
+
+    if not topic_id:
+        # Создаём новый топик
+        try:
+            topic_name = f"User {user_id}"
+            if user and user.get("username"):
+                topic_name = f"@{user['username']} ({user_id})"
+            forum_topic = await bot.create_forum_topic(
+                chat_id=Config.CHAT_ADMIN_GROUP_ID,
+                name=topic_name,
+            )
+            topic_id = forum_topic.message_thread_id
+            db.set_chat_topic(user_id, topic_id)
+            logger.info(f"Создан топик {topic_id} для пользователя {user_id}")
+        except Exception as e:
+            await target.answer(f"❌ Не удалось создать топик в группе: {e}")
+            await state.clear()
+            return
+
+    # Отправляем заголовок в топик (user_info уже содержит HTML-ссылку)
+    tg_link = user_info
+    roblox_nick = (user or {}).get("roblox_nick") or ""
+    lang = (user or {}).get("language", "RUS")
+    lang_flag = "🇷🇺 RUS" if lang == "RUS" else "🇬🇧 EN"
+
+    if existing_topic_id:
+        header = (
+            f"🔄 <b>Новый диалог начат</b>\n"
+            f"👤 {tg_link}"
+            + (f" (Roblox: {roblox_nick})" if roblox_nick else "")
+            + f" | {lang_flag}\n"
+            f"🧑‍💼 Администратор: {admin_id}\n"
+            f"🕐 {__import__('datetime').datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+    else:
+        header = (
+            f"💬 <b>Чат с пользователем</b>\n"
+            f"👤 {tg_link}"
+            + (f" (Roblox: {roblox_nick})" if roblox_nick else "")
+            + f" | {lang_flag}\n"
+            f"🧑‍💼 Администратор: {admin_id}\n"
+            f"📌 Для завершения напишите /stop в этом топике\n"
+            f"🕐 {__import__('datetime').datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+    try:
+        await bot.send_message(
+            chat_id=Config.CHAT_ADMIN_GROUP_ID,
+            message_thread_id=topic_id,
+            text=header,
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось отправить заголовок в топик {topic_id}: {e}")
+
+    # Уведомляем пользователя
+    lang_code = "ru" if lang == "RUS" else "en"
+    notification = (
+        "👤 <b>С Вами связался администратор</b>"
+        if lang_code == "ru"
+        else "👤 <b>An administrator has contacted you</b>"
+    )
+    try:
+        await bot.send_message(user_id, notification, parse_mode="HTML")
+    except Exception as e:
+        await target.answer(f"❌ Не удалось уведомить пользователя: {e}")
+        await state.clear()
+        return
+
+    active_chats[user_id] = {"admin_id": admin_id, "mode": "group", "topic_id": topic_id}
+    db.set_active_chat(user_id, admin_id)
+
+    await target.answer(
+        f"✅ Чат через группу начат!\n"
+        f"👤 Пользователь: {user_info}\n"
+        f"📌 Топик: {topic_id}\n\n"
+        f"Пишите сообщения в топик группы.\n"
+        f"Для завершения напишите /stop в топике.",
+        parse_mode="HTML",
+    )
+    await state.set_state(ChatStates.group_chatting)
+    await state.update_data(chat_with_user=user_id, chat_topic_id=topic_id)
+
+    try:
+        await log_admin_action(
+            bot,
+            admin_id=admin_id,
+            admin_name=target.from_user.full_name if hasattr(target, 'from_user') else "Админ",
+            action="Открыт чат с пользователем (группа)",
+            details=f"{user_info}, топик: {topic_id}",
+        )
+    except Exception:
+        pass
 
 
 @router.message(ChatStates.chatting)
 async def forward_admin_message(message: Message, state: FSMContext):
+    """Пересылка сообщения администратора пользователю (режим бота)."""
     if not is_admin(message.from_user.id):
         await state.clear()
         return
@@ -167,7 +344,40 @@ async def forward_admin_message(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    if user_id not in active_chats or active_chats[user_id] != message.from_user.id:
+    entry = active_chats.get(user_id)
+    admin_id = _get_admin_id(entry) if entry else None
+    if not entry or admin_id != message.from_user.id:
+        await message.answer("❌ Чат с пользователем не активен или был завершен")
+        await state.clear()
+        return
+
+    try:
+        await message.copy_to(user_id)
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить сообщение: {e}")
+        if "Forbidden" in str(e) or "blocked" in str(e):
+            active_chats.pop(user_id, None)
+            db.remove_active_chat(user_id)
+            await state.clear()
+
+
+@router.message(ChatStates.group_chatting)
+async def forward_admin_message_group(message: Message, state: FSMContext):
+    """Пересылка сообщения администратора пользователю (режим группы).
+    Сообщение в ЛС бота → копируется пользователю."""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    user_id = data.get("chat_with_user")
+    if not user_id:
+        await state.clear()
+        return
+
+    entry = active_chats.get(user_id)
+    admin_id = _get_admin_id(entry) if entry else None
+    if not entry or admin_id != message.from_user.id:
         await message.answer("❌ Чат с пользователем не активен или был завершен")
         await state.clear()
         return
@@ -548,19 +758,21 @@ async def admin_roblox_receive_user_id(message: Message, state: FSMContext):
     data = await state.get_data()
     action = data.get("roblox_action", "view")
     current_nick = db.get_roblox_nick(target_id)
-    display = f"@{user_data['username']}" if user_data.get("username") else f"ID: {target_id}"
+    _dname = f"@{user_data['username']}" if user_data.get("username") else f"ID: {target_id}"
+    display = f'<a href="tg://user?id={target_id}">{_dname}</a>'
 
     if action == "view":
         if current_nick:
-            await message.answer(f"🎮 Roblox-ник {display}: <b>@{current_nick}</b>")
+            await message.answer(f"🎮 Roblox-ник {display}: <b>@{current_nick}</b>", parse_mode="HTML")
         else:
-            await message.answer(f"🎮 У {display} не установлен Roblox-ник.")
+            await message.answer(f"🎮 У {display} не установлен Roblox-ник.", parse_mode="HTML")
         await state.clear()
         return
 
     nick_info = f"\nТекущий ник: <b>@{current_nick}</b>" if current_nick else "\nНик не установлен."
     await message.answer(
-        f"Пользователь: {display}{nick_info}\n\nВведите новый Roblox-ник (без @):"
+        f"Пользователь: {display}{nick_info}\n\nВведите новый Roblox-ник (без @):",
+        parse_mode="HTML",
     )
     await state.set_state(RobloxNickStates.waiting_for_new_nick)
     await state.update_data(target_user_id=target_id, target_display=display)

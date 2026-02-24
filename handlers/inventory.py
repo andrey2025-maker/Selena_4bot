@@ -25,7 +25,7 @@ from utils.messages import locale_manager
 from config import Config
 from utils.keyboards import get_main_keyboard
 from utils.log_events import (
-    log_inventory_add, log_inventory_remove,
+    log_inventory_add, log_inventory_remove, log_inventory_transfer,
     log_inventory_pickup_request, log_inventory_pickup_done,
 )
 
@@ -160,11 +160,12 @@ class InventoryPickupStates(StatesGroup):
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 def _user_display(user: dict) -> str:
-    """Отображаемое имя пользователя"""
-    if user and user.get("username"):
-        return f"@{user['username']}"
-    uid = user["user_id"] if user else "?"
-    return f"ID: {uid}"
+    """HTML-ссылка на пользователя: @username или ID: uid."""
+    if not user:
+        return "?"
+    uid = user["user_id"]
+    label = f"@{user['username']}" if user.get("username") else f"ID: {uid}"
+    return f'<a href="tg://user?id={uid}">{label}</a>'
 
 
 ITEMS_PER_PAGE = 10
@@ -317,12 +318,28 @@ def _inventory_text(items: list, lang: str, title: str = None,
     return "\n".join(lines)
 
 
+def _has_media(item: dict) -> bool:
+    """Проверить наличие медиафайла у предмета.
+    Если media_type не заполнен (старые записи) — считаем photo по умолчанию."""
+    fid = item.get("media_file_id")
+    if not fid:
+        return False
+    mtype = item.get("media_type")
+    # NULL/пустой media_type — считаем photo (обратная совместимость)
+    return (not mtype) or (mtype in ("photo", "video", "document"))
+
+
 def _first_media_item(items: list) -> dict | None:
     """Вернуть первый предмет с медиафайлом (фото, видео или документ)."""
     for item in items:
-        if item.get("media_file_id") and item.get("media_type") in ("photo", "video", "document"):
+        if _has_media(item):
             return item
     return None
+
+
+def _all_media_items(items: list) -> list:
+    """Вернуть все предметы с медиафайлами со страницы."""
+    return [i for i in items if _has_media(i)]
 
 
 async def _send_inventory_page(
@@ -335,14 +352,16 @@ async def _send_inventory_page(
     edit: bool = False,
     title: str = None,
     show_actions: bool = True,
+    album_msg_ids: list = None,
 ):
     """
     Отправить/обновить страницу инвентаря.
 
-    - Фото берётся из первого медиа-предмета ТЕКУЩЕЙ страницы.
-    - При edit=True с медиа: удаляем старое сообщение и отправляем новое
-      (фото могло смениться при перелистывании).
+    - Если на странице несколько медиа-предметов — отправляется альбом + текст отдельно.
+    - Если одно медиа — текст+кнопки в caption.
+    - При edit=True: удаляем старые сообщения (включая альбом) и отправляем новые.
     - show_actions=False — без кнопок Забрать/Добавить (для группы).
+    - album_msg_ids — список message_id альбома для удаления при перелистывании.
     """
     items = db.get_user_inventory(user_id)
     total = len(items)
@@ -356,7 +375,7 @@ async def _send_inventory_page(
     # Медиа берём только из предметов ТЕКУЩЕЙ страницы
     start = page * ITEMS_PER_PAGE
     page_items = items[start: start + ITEMS_PER_PAGE]
-    media_item = _first_media_item(page_items)
+    media_items = _all_media_items(page_items)
 
     msg_target = target if isinstance(target, Message) else target.message
 
@@ -365,23 +384,33 @@ async def _send_inventory_page(
         has_media = bool(msg.photo or msg.video or msg.document)
 
         if has_media:
-            # Удаляем старое сообщение с медиа и отправляем новое —
-            # фото на новой странице может быть другим
+            # Одиночное медиа-сообщение — удаляем и пересоздаём
             try:
                 await msg.delete()
             except Exception:
                 pass
-            await _send_inventory_page(
+            return await _send_inventory_page(
                 target, user_id, lang, page,
                 bot=bot, edit=False, title=title, show_actions=show_actions
             )
-            return
 
-        # Текстовое сообщение — просто редактируем
+        # Текстовое сообщение (в т.ч. текст после альбома) — редактируем текст
+        # Альбом уже удалён в вызывающем хендлере (inventory_page_turn)
+        if media_items:
+            # На новой странице есть медиа — удаляем текст и отправляем заново с медиа
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            return await _send_inventory_page(
+                target, user_id, lang, page,
+                bot=bot, edit=False, title=title, show_actions=show_actions
+            )
+
+        # Нет медиа на новой странице — просто редактируем текст
         try:
             await msg.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         except Exception:
-            # Не удалось отредактировать — отправляем новое
             await _send_inventory_page(
                 target, user_id, lang, page,
                 bot=bot, edit=False, title=title, show_actions=show_actions
@@ -389,10 +418,12 @@ async def _send_inventory_page(
         return
 
     # Новое сообщение
-    if media_item:
+    if len(media_items) == 1:
+        # Одно медиа — отправляем с текстом и кнопками в caption
         try:
-            mtype = media_item.get("media_type", "photo")
-            fid = media_item["media_file_id"]
+            mi = media_items[0]
+            mtype = mi.get("media_type", "photo")
+            fid = mi["media_file_id"]
             if mtype == "video":
                 await msg_target.answer_video(fid, caption=text, reply_markup=keyboard, parse_mode="HTML")
             elif mtype == "document":
@@ -402,6 +433,28 @@ async def _send_inventory_page(
             return
         except Exception as e:
             logger.warning(f"Failed to send inventory media: {e}")
+
+    elif len(media_items) > 1:
+        # Несколько медиа — отправляем альбом, затем текст с кнопками отдельным сообщением
+        sent_album_ids = []
+        try:
+            media_group = []
+            for mi in media_items:
+                mtype = mi.get("media_type", "photo")
+                fid = mi["media_file_id"]
+                name = mi.get("name", "")
+                if mtype == "video":
+                    media_group.append(InputMediaVideo(media=fid, caption=name, parse_mode="HTML"))
+                else:
+                    media_group.append(InputMediaPhoto(media=fid, caption=name, parse_mode="HTML"))
+            sent = await msg_target.answer_media_group(media_group)
+            sent_album_ids = [m.message_id for m in sent] if sent else []
+        except Exception as e:
+            logger.warning(f"Failed to send inventory media group: {e}")
+        # Текст с кнопками — отдельным сообщением после альбома
+        await msg_target.answer(text, reply_markup=keyboard, parse_mode="HTML")
+        # Возвращаем IDs альбома чтобы вызывающий код мог сохранить их в FSM
+        return sent_album_ids
 
     await msg_target.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -424,24 +477,18 @@ def _build_group_inventory_keyboard(owner_id: int, lang: str, page: int = 0, tot
 
 
 def _inventory_title(user_id: int, lang: str) -> str:
-    """Заголовок инвентаря: 📦 Инвентарь - <ссылка на пользователя> (Roblox: ник)"""
+    """Заголовок инвентаря: 📦 Инвентарь <ссылка на пользователя> (Roblox: ник)"""
     user = db.get_user(user_id)
     roblox_nick = db.get_roblox_nick(user_id)
 
-    if user and user.get("username"):
-        display = f"@{user['username']}"
-    else:
-        display = f"ID: {user_id}"
-
-    # Ссылка на страницу Telegram пользователя — знак «-» является кликабельной ссылкой
-    link = f'<a href="tg://user?id={user_id}">-</a>'
-
+    label = f"@{user['username']}" if user and user.get("username") else f"ID: {user_id}"
+    link = f'<a href="tg://user?id={user_id}">{label}</a>'
     roblox_part = f" (Roblox: {roblox_nick})" if roblox_nick else ""
 
     if lang == "RUS":
-        return f"📦 Инвентарь {link} {display}{roblox_part}"
+        return f"📦 Инвентарь {link}{roblox_part}"
     else:
-        return f"📦 Inventory {link} {display}{roblox_part}"
+        return f"📦 Inventory {link}{roblox_part}"
 
 
 async def _send_item_media(bot: Bot, chat_id: int, item: dict, caption: str = None):
@@ -512,7 +559,10 @@ async def show_inventory(message: Message, state: FSMContext):
     lang = user.get("language", "RUS") if user else "RUS"
 
     title = _inventory_title(user_id, lang)
-    await _send_inventory_page(message, user_id, lang, page=0, bot=message.bot, title=title)
+    result = await _send_inventory_page(message, user_id, lang, page=0, bot=message.bot, title=title)
+    # Сохраняем IDs альбома в FSM если была отправлена медиагруппа
+    if isinstance(result, list) and result:
+        await state.update_data(inv_album_msg_ids=result)
 
 
 @router.callback_query(F.data.startswith("inv_page_"))
@@ -528,7 +578,21 @@ async def inventory_page_turn(callback: CallbackQuery, state: FSMContext):
     lang = user.get("language", "RUS") if user else "RUS"
     title = _inventory_title(user_id, lang)
 
-    await _send_inventory_page(callback, user_id, lang, page=page, edit=True, title=title)
+    # Удаляем сообщения альбома из предыдущей страницы (если были)
+    fsm_data = await state.get_data()
+    prev_album_ids = fsm_data.get("inv_album_msg_ids", [])
+    if prev_album_ids:
+        for mid in prev_album_ids:
+            try:
+                await callback.bot.delete_message(callback.message.chat.id, mid)
+            except Exception:
+                pass
+        await state.update_data(inv_album_msg_ids=[])
+
+    result = await _send_inventory_page(callback, user_id, lang, page=page, edit=True, title=title)
+    # Сохраняем IDs нового альбома если была отправлена медиагруппа
+    if isinstance(result, list) and result:
+        await state.update_data(inv_album_msg_ids=result)
     await callback.answer()
 
 
@@ -821,7 +885,7 @@ async def _finalize_pickup(target, state: FSMContext, user, user_id: int,
     )
     admin_header = (
         f"📦 <b>Запрос на выдачу</b>\n\n"
-        f"👤 Пользователь: <a href='tg://user?id={user_id}'>{user_display}</a>\n"
+        f"👤 Пользователь: {user_display}\n"
         f"🎒 Предметы:\n{items_text}"
     )
 
@@ -954,7 +1018,7 @@ async def admin_take_pickup_request(callback: CallbackQuery):
     # У того кто взял — кнопки «Связаться» и «Инвентарь»
     executor_text = (
         f"✅ <b>Вы взяли запрос в работу</b>\n\n"
-        f"👤 Пользователь: <a href='tg://user?id={user_id}'>{user_display}</a>"
+        f"👤 Пользователь: {user_display}"
     )
     executor_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="💬 Связаться", callback_data=f"inv_adm_chat_{user_id}"),
@@ -985,7 +1049,7 @@ async def admin_take_pickup_request(callback: CallbackQuery):
     # У остальных админов — обновляем сообщение: кто выполнил
     other_text = (
         f"✅ <b>Запрос выполнен</b>\n\n"
-        f"👤 Пользователь: <a href='tg://user?id={user_id}'>{user_display}</a>\n"
+        f"👤 Пользователь: {user_display}\n"
         f"👑 Выполнил: <a href='tg://user?id={executor.id}'>{executor.full_name}</a>"
     )
     for admin_id in ADMIN_IDS:
@@ -1044,7 +1108,7 @@ async def admin_take_pet_request(callback: CallbackQuery):
     executor_text = (
         f"🙋 <b>Вы взяли запрос в работу</b>\n\n"
         f"🐾 Запрос на добавление питомца\n"
-        f"👤 Пользователь: <a href='tg://user?id={user_id}'>{user_display}</a>\n\n"
+        f"👤 Пользователь: {user_display}\n\n"
         f"Свяжитесь с пользователем и добавьте питомца вручную через 🎒 Инвентарь."
     )
     executor_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
@@ -1068,7 +1132,7 @@ async def admin_take_pet_request(callback: CallbackQuery):
     other_text = (
         f"🔄 <b>Запрос взят в работу</b>\n\n"
         f"🐾 Запрос на добавление питомца\n"
-        f"👤 Пользователь: <a href='tg://user?id={user_id}'>{user_display}</a>\n"
+        f"👤 Пользователь: {user_display}\n"
         f"🙋 Выполняет: <a href='tg://user?id={executor.id}'>{executor.full_name}</a>"
     )
     for admin_id in ADMIN_IDS:
@@ -1828,16 +1892,19 @@ async def admin_transfer_recipient_receive(message: Message, state: FSMContext):
             await message.bot.send_message(recipient_id, notif, parse_mode="HTML")
         except Exception:
             pass
-        # Лог
+        # Лог передачи
         try:
             _adm = message.from_user
             _src = db.get_user(source_user_id)
-            await log_inventory_remove(
+            _dst = db.get_user(recipient_id)
+            await log_inventory_transfer(
                 message.bot,
                 admin_id=_adm.id,
                 admin_name=_adm.full_name,
-                user_id=source_user_id,
-                user_name=(_src or {}).get("roblox_nick") or (_src or {}).get("username") or str(source_user_id),
+                from_user_id=source_user_id,
+                from_user_name=(_src or {}).get("roblox_nick") or (_src or {}).get("username") or str(source_user_id),
+                to_user_id=recipient_id,
+                to_user_name=(_dst or {}).get("roblox_nick") or (_dst or {}).get("username") or str(recipient_id),
                 item_name=", ".join(f"{n} x{q}" for n, q in transferred),
                 quantity=sum(q for _, q in transferred),
             )
@@ -1854,14 +1921,14 @@ async def admin_transfer_recipient_receive(message: Message, state: FSMContext):
 
 # ========== ДОБАВЛЕНИЕ ПРЕДМЕТОВ АДМИНИСТРАТОРОМ ==========
 
-def _admin_add_type_keyboard() -> InlineKeyboardMarkup:
+def _admin_add_type_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🍎 Еда / Food",    callback_data="inv_adm_type_food"),
-            InlineKeyboardButton(text="🐾 Пет / Pet",     callback_data="inv_adm_type_pet"),
+            InlineKeyboardButton(text="🍎 Еда / Food",    callback_data=f"inv_adm_type_food_{user_id}"),
+            InlineKeyboardButton(text="🐾 Пет / Pet",     callback_data=f"inv_adm_type_pet_{user_id}"),
         ],
         [
-            InlineKeyboardButton(text="📦 Предмет / Item", callback_data="inv_adm_type_item"),
+            InlineKeyboardButton(text="📦 Предмет / Item", callback_data=f"inv_adm_type_item_{user_id}"),
         ],
     ])
 
@@ -1929,18 +1996,21 @@ async def admin_start_add_item(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
         f"➕ <b>Добавление в инвентарь {user_display}</b>\n\nВыберите тип:",
         parse_mode="HTML",
-        reply_markup=_admin_add_type_keyboard(),
+        reply_markup=_admin_add_type_keyboard(target_user_id),
     )
     await callback.answer()
 
 
 # ─── ТИП: ПРЕДМЕТ ────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "inv_adm_type_item")
+@router.callback_query(F.data.startswith("inv_adm_type_item"))
 async def admin_add_item_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав", show_alert=True)
         return
+    parts = callback.data.split("_")
+    if len(parts) >= 5 and parts[4].isdigit():
+        await state.update_data(target_user_id=int(parts[4]))
     await state.set_state(AdminInventoryStates.adding_item_data)
     await callback.message.answer(
         "📦 <b>Добавление предмета</b>\n\n"
@@ -1965,6 +2035,11 @@ async def admin_receive_item(message: Message, state: FSMContext):
 
     data = await state.get_data()
     target_user_id = data.get("target_user_id")
+
+    if not target_user_id:
+        await state.clear()
+        await message.answer("❌ Ошибка: не удалось определить пользователя. Начните добавление заново.")
+        return
 
     # ── Обработка медиагруппы (альбома) ──────────────────────────────────────
     if message.media_group_id:
@@ -2110,16 +2185,18 @@ async def _finalize_item_media_group(message: Message, state: FSMContext, target
 
 # ─── ТИП: ЕДА ────────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "inv_adm_type_food")
+@router.callback_query(F.data.startswith("inv_adm_type_food"))
 async def admin_add_food_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав", show_alert=True)
         return
     data = await state.get_data()
     lang = (db.get_user(callback.from_user.id) or {}).get("language", "RUS")
+    parts = callback.data.split("_")
+    target_user_id = int(parts[4]) if len(parts) >= 5 and parts[4].isdigit() else data.get("target_user_id")
     await state.set_state(AdminInventoryStates.food_selecting)
     await state.update_data(food_selected=[], food_lang=lang,
-                            target_user_id=data.get("target_user_id"))
+                            target_user_id=target_user_id)
     header = "🍎 <b>Выберите еду для добавления:</b>" if lang == "RUS" else "🍎 <b>Select food to add:</b>"
     await callback.message.answer(header, parse_mode="HTML",
                                   reply_markup=_food_select_keyboard([], lang))
@@ -2188,6 +2265,11 @@ async def admin_food_qty_receive(message: Message, state: FSMContext):
     quantities: dict = dict(data.get("food_quantities", {}))
     target_user_id = data.get("target_user_id")
 
+    if not target_user_id:
+        await state.clear()
+        await message.answer("❌ Ошибка: не удалось определить пользователя. Начните добавление заново.")
+        return
+
     if not message.text or not message.text.strip().isdigit() or int(message.text.strip()) < 1:
         err = "Введите целое положительное число" if lang == "RUS" else "Enter a positive integer"
         await message.answer(err)
@@ -2253,15 +2335,17 @@ async def admin_food_qty_receive(message: Message, state: FSMContext):
 
 # ─── ТИП: ПЕТ ────────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "inv_adm_type_pet")
+@router.callback_query(F.data.startswith("inv_adm_type_pet"))
 async def admin_add_pet_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав", show_alert=True)
         return
     data = await state.get_data()
     lang = (db.get_user(callback.from_user.id) or {}).get("language", "RUS")
+    parts = callback.data.split("_")
+    target_user_id = int(parts[4]) if len(parts) >= 5 and parts[4].isdigit() else data.get("target_user_id")
     await state.set_state(AdminInventoryStates.pet_name)
-    await state.update_data(target_user_id=data.get("target_user_id"), pet_lang=lang)
+    await state.update_data(target_user_id=target_user_id, pet_lang=lang)
     text = "🐾 Введите имя пета (например: Дракон):" if lang == "RUS" else "🐾 Enter the pet name (e.g. Dragon):"
     await callback.message.answer(text)
     await callback.answer()
@@ -2398,6 +2482,14 @@ async def _save_pet_to_db(message_or_callback, state: FSMContext,
     data = await state.get_data()
     target_user_id = data.get("target_user_id")
     lang = data.get("pet_lang", "RUS")
+
+    if not target_user_id:
+        await state.clear()
+        answer = (message_or_callback.answer
+                  if isinstance(message_or_callback, Message)
+                  else message_or_callback.message.answer)
+        await answer("❌ Ошибка: не удалось определить пользователя. Начните добавление заново.")
+        return
     pet_name = data.get("pet_name", "")
     income = data.get("pet_income", "")
     mutation_key = data.get("pet_mutation", "")
@@ -2691,7 +2783,7 @@ async def _send_pet_request_to_admins(
     user_display = _user_display(user)
     caption = (
         f"🐾 <b>Запрос на добавление питомца</b>\n\n"
-        f"👤 Пользователь: <a href='tg://user?id={user_id}'>{user_display}</a>\n"
+        f"👤 Пользователь: {user_display}\n"
         f"🆔 ID: <code>{user_id}</code>"
     )
     take_keyboard = InlineKeyboardMarkup(inline_keyboard=[[

@@ -24,7 +24,7 @@ from database import Database
 from utils.messages import locale_manager
 from config import Config
 from utils.keyboards import get_main_keyboard
-from utils.log_events import log_giveaway_created, log_giveaway_finished
+from utils.log_events import log_giveaway_created, log_giveaway_finished, log_inventory_add
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -136,6 +136,7 @@ class GiveawayCreateStates(StatesGroup):
     prize_pet_mutation = State()# мутация пета
     prize_pet_weather = State() # погода пета
     prize_pet_coeff = State()   # коэффициент пета
+    prize_pet_photo = State()   # фото пета (опционально)
     end_type = State()          # способ завершения
     end_time = State()          # дата/время (если по времени)
     end_count = State()         # кол-во участников (если по кол-ву)
@@ -368,7 +369,9 @@ async def finish_giveaway(bot: Bot, giveaway_id: int):
                             added_by=None,
                         )
                 elif ptype == "pet":
-                    db.add_inventory_item(
+                    pet_media_fid = prize.get("media_file_id")
+                    pet_media_type = prize.get("media_type")
+                    new_item_id = db.add_inventory_item(
                         user_id=uid,
                         name=prize["name"],
                         item_type="pet",
@@ -377,7 +380,26 @@ async def finish_giveaway(bot: Bot, giveaway_id: int):
                         pet_mutation=prize.get("pet_mutation"),
                         pet_weather=prize.get("pet_weather"),
                         pet_coeff=prize.get("pet_coeff"),
+                        media_file_id=pet_media_fid,
+                        media_type=pet_media_type,
                     )
+                    # Логируем добавление пета; для фото — получаем стабильный file_id из лог-группы
+                    winner_user = db.get_user(uid)
+                    winner_name = (winner_user or {}).get("username") or str(uid)
+                    stable_fid = await log_inventory_add(
+                        bot,
+                        admin_id=0,
+                        admin_name="🎰 Розыгрыш",
+                        user_id=uid,
+                        user_name=winner_name,
+                        item_type="pet",
+                        item_name=prize["name"],
+                        media_file_id=pet_media_fid,
+                        media_type=pet_media_type,
+                    )
+                    # Если фото переслано в лог-группу — обновляем стабильный file_id в БД
+                    if stable_fid and new_item_id:
+                        db.update_inventory_item_media(new_item_id, stable_fid, "photo")
                 else:
                     db.add_inventory_item(
                         user_id=uid,
@@ -1013,33 +1035,89 @@ async def gw_pet_coeff_receive(message: Message, state: FSMContext):
         await message.answer('❌ Введите число в формате "1.99"')
         return
 
-    data = await state.get_data()
+    await state.update_data(gw_pet_coeff=coeff_raw)
+    await state.set_state(GiveawayCreateStates.prize_pet_photo)
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭ Пропустить (без фото)", callback_data="gw_pet_photo_skip")],
+    ])
+    await message.answer(
+        "📸 Отправьте фото пета для приза (будет показано победителю)\n"
+        "или нажмите <b>Пропустить</b> если фото не нужно.\n\n"
+        "❌ /cancel — отменить",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+def _save_pet_prize(data: dict, file_id: str | None, media_type: str | None) -> tuple[list, int, int]:
+    """Собрать и добавить приз-пет в список призов. Возвращает (prizes, current_place, winner_count)."""
     current_place = data.get("current_place", 1)
     winner_count = data.get("winner_count", 1)
     prizes: list = data.get("prizes", [])
-
     pet_name = data.get("gw_pet_name", "")
     income = data.get("gw_pet_income", "")
     mutation_key = data.get("gw_pet_mutation", "")
     weather_key = data.get("gw_pet_weather")
-
+    coeff_raw = data.get("gw_pet_coeff", "1.0")
     full_name = _pet_full_name(pet_name, income, mutation_key, weather_key, coeff_raw, "RUS")
-
     prizes.append({
         "place": current_place,
         "prize_type": "pet",
         "name": full_name,
         "description": None,
-        "media_file_id": None,
-        "media_type": None,
+        "media_file_id": file_id,
+        "media_type": media_type,
         "pet_income": income,
         "pet_mutation": mutation_key,
         "pet_weather": weather_key,
         "pet_coeff": coeff_raw,
     })
+    return prizes, current_place, winner_count
+
+
+@router.message(GiveawayCreateStates.prize_pet_photo)
+async def gw_pet_photo_receive(message: Message, state: FSMContext):
+    """Получить фото пета-приза."""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+    if message.text and message.text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("🚫 Создание розыгрыша отменено.")
+        return
+
+    file_id, media_type = _extract_media(message)
+    if not file_id:
+        await message.answer(
+            "❌ Пожалуйста, отправьте фото пета или нажмите <b>Пропустить</b>.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⏭ Пропустить (без фото)", callback_data="gw_pet_photo_skip")],
+            ]),
+        )
+        return
+
+    data = await state.get_data()
+    prizes, current_place, winner_count = _save_pet_prize(data, file_id, media_type)
     await state.update_data(prizes=prizes)
     await state.set_state(GiveawayCreateStates.prize_type)
     await _show_prize_navigation(message, state, current_place, winner_count, prizes)
+
+
+@router.callback_query(F.data == "gw_pet_photo_skip", GiveawayCreateStates.prize_pet_photo)
+async def gw_pet_photo_skip(callback: CallbackQuery, state: FSMContext):
+    """Пропустить фото пета-приза."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+    data = await state.get_data()
+    prizes, current_place, winner_count = _save_pet_prize(data, None, None)
+    await state.update_data(prizes=prizes)
+    await state.set_state(GiveawayCreateStates.prize_type)
+    await callback.message.answer("✅ Фото пропущено.")
+    await _show_prize_navigation(callback.message, state, current_place, winner_count, prizes)
+    await callback.answer()
 
 
 # ========== НАВИГАЦИЯ ПО ПРИЗАМ ==========

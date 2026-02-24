@@ -5,17 +5,26 @@ group_commands.py - Команды для работы в группах и ЛС
 
 from aiogram import Router, types, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    InputMediaPhoto, InputMediaVideo,
+)
 import re
 import logging
 from datetime import datetime
 
 from database import Database
+from handlers.admin_common import ADMIN_IDS
 
 _db = Database()
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+def _is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
 # ========== МУТАЦИИ И ИХ ПРОЦЕНТЫ ==========
 MUTATIONS = {
@@ -185,7 +194,7 @@ def fmt(n: int) -> str:
     return f"{n:,}".replace(",", "\u00a0")
 
 
-@router.message(F.text.startswith('!'), ~F.text.regexp(r'(?i)^!(инв|инвентарь|петы)$'), ~F.text.regexp(r'(?i)^!пет\s+'))
+@router.message(F.text.startswith('!'), ~F.text.regexp(r'(?i)^!(инв|инвентарь|петы)$'), ~F.text.regexp(r'(?i)^!пет\s+'), ~F.text.regexp(r'(?i)^!(инв|инвентарь)\s+'))
 async def handle_exclamation_command(message: Message):
     """Обработка команд с !"""
     text = message.text.strip()
@@ -408,9 +417,128 @@ def _group_inv_text(items: list, lang: str, full_name: str, page: int) -> str:
     return "\n".join(lines)
 
 
+async def _resolve_target_user(text_arg: str) -> dict | None:
+    """Найти пользователя по @username, числовому ID или псевдониму (alias)."""
+    text_arg = text_arg.strip()
+    if text_arg.startswith("@"):
+        return _db.get_user_by_username(text_arg[1:])
+    if text_arg.lstrip("-").isdigit():
+        return _db.get_user(int(text_arg))
+    # Поиск по псевдониму скрытого пользователя (регистронезависимо)
+    alias_lower = text_arg.lower()
+    for h in _db.get_all_hidden_users():
+        if h["alias"].lower() == alias_lower:
+            return _db.get_user(h["user_id"])
+    # Попробуем как username без @
+    return _db.get_user_by_username(text_arg)
+
+
+def _page_media_items(items: list, page: int) -> list:
+    """Вернуть все предметы с медиафайлом на заданной странице."""
+    page_items = items[page * ITEMS_PER_PAGE: (page + 1) * ITEMS_PER_PAGE]
+    return [
+        it for it in page_items
+        if it.get("media_file_id") and (
+            not it.get("media_type") or it.get("media_type") in ("photo", "video", "document")
+        )
+    ]
+
+
+async def _send_inventory_reply(message: Message, target_user_id: int, display_name: str, lang: str):
+    """Отправить инвентарь пользователя в ответ на сообщение.
+    Если на странице несколько медиа — отправляется альбом + текст отдельно.
+    Если одно медиа — текст+кнопки в caption.
+    Возвращает список message_id альбома (или пустой список).
+    """
+    items = _db.get_user_inventory(target_user_id)
+    if not items:
+        text = "🎒 Инвентарь пуст." if lang == "RUS" else "🎒 Inventory is empty."
+        await message.reply(text)
+        return []
+
+    page = 0
+    text = _group_inv_text(items, lang, display_name, page=page)
+    keyboard = _build_group_inv_keyboard(target_user_id, page=page, total=len(items))
+    media_items = _page_media_items(items, page)
+
+    if len(media_items) == 1:
+        mi = media_items[0]
+        fid = mi["media_file_id"]
+        mtype = mi.get("media_type") or "photo"
+        try:
+            if mtype == "video":
+                await message.reply_video(fid, caption=text, reply_markup=keyboard, parse_mode="HTML")
+            else:
+                await message.reply_photo(fid, caption=text, reply_markup=keyboard, parse_mode="HTML")
+            return []
+        except Exception as e:
+            logger.warning(f"Failed to send group inventory photo: {e}")
+
+    elif len(media_items) > 1:
+        album = []
+        for mi in media_items:
+            fid = mi["media_file_id"]
+            mtype = mi.get("media_type") or "photo"
+            if mtype == "video":
+                album.append(InputMediaVideo(media=fid))
+            else:
+                album.append(InputMediaPhoto(media=fid))
+        album_msg_ids = []
+        try:
+            sent = await message.reply_media_group(album)
+            album_msg_ids = [m.message_id for m in sent] if sent else []
+        except Exception as e:
+            logger.warning(f"Failed to send group inventory album: {e}")
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+        return album_msg_ids
+
+    await message.reply(text, reply_markup=keyboard, parse_mode="HTML")
+    return []
+
+
+@router.message(F.text.regexp(r'(?i)^!(инв|инвентарь)\s+\S+'))
+async def group_inventory_admin_command(message: Message, state: FSMContext):
+    """!инв @username / !инв <id> — только для админов, смотреть чужой инвентарь."""
+    if not message.from_user:
+        await message.reply("❌ Команда недоступна от имени группы.")
+        return
+
+    caller_id = message.from_user.id
+    if not _is_admin(caller_id):
+        await message.reply("⛔ Только администраторы могут смотреть чужой инвентарь.")
+        return
+
+    m = re.match(r'(?i)^!(?:инв|инвентарь)\s+(\S+)', message.text or "")
+    if not m:
+        await message.reply("❌ Укажите @username или ID пользователя.")
+        return
+    arg = m.group(1)
+
+    target = await _resolve_target_user(arg)
+    if not target:
+        await message.reply(f"❌ Пользователь <code>{arg}</code> не найден в базе.", parse_mode="HTML")
+        return
+
+    target_id = target["user_id"]
+    lang = target.get("language", "RUS")
+
+    hidden = _db.get_hidden_user(target_id)
+    display_name = hidden["alias"] if hidden else _db.get_display_name(target_id, for_admin=True)
+
+    album_ids = await _send_inventory_reply(message, target_id, display_name, lang)
+    if album_ids:
+        await state.update_data(**{f"ginv_album_{target_id}": album_ids})
+
+
 @router.message(F.text.regexp(r'(?i)^!(инв|инвентарь)$'))
-async def group_inventory_command(message: Message):
-    """!инв / !инвентарь — показать инвентарь пользователя в группе с пагинацией"""
+async def group_inventory_command(message: Message, state: FSMContext):
+    """!инв / !инвентарь — показать свой инвентарь в группе с пагинацией."""
+    if not message.from_user:
+        await message.reply(
+            "❌ Напишите команду от своего аккаунта, а не от имени группы."
+        )
+        return
+
     user_id = message.from_user.id
     user = _db.get_user(user_id)
 
@@ -422,37 +550,15 @@ async def group_inventory_command(message: Message):
         return
 
     lang = user.get("language", "RUS")
-    items = _db.get_user_inventory(user_id)
+    display_name = _db.get_display_name(user_id, for_admin=False)
 
-    if not items:
-        text = "🎒 Инвентарь пуст." if lang == "RUS" else "🎒 Inventory is empty."
-        await message.reply(text)
-        return
-
-    full_name = message.from_user.full_name
-    text = _group_inv_text(items, lang, full_name, page=0)
-    keyboard = _build_group_inv_keyboard(user_id, page=0, total=len(items))
-
-    # Ищем первый предмет с фото
-    first_photo = next((it for it in items if it.get("media_file_id") and it.get("media_type") == "photo"), None)
-
-    if first_photo:
-        try:
-            await message.reply_photo(
-                first_photo["media_file_id"],
-                caption=text,
-                reply_markup=keyboard,
-                parse_mode="HTML",
-            )
-            return
-        except Exception as e:
-            logger.warning(f"Failed to send group inventory photo: {e}")
-
-    await message.reply(text, reply_markup=keyboard, parse_mode="HTML")
+    album_ids = await _send_inventory_reply(message, user_id, display_name, lang)
+    if album_ids:
+        await state.update_data(**{f"ginv_album_{user_id}": album_ids})
 
 
 @router.callback_query(F.data.startswith("ginv_page_"))
-async def group_inventory_page_turn(callback: CallbackQuery):
+async def group_inventory_page_turn(callback: CallbackQuery, state: FSMContext):
     """Листание страниц инвентаря в группе — только владелец."""
     parts = callback.data.split("_")
     owner_id = int(parts[2])
@@ -461,41 +567,85 @@ async def group_inventory_page_turn(callback: CallbackQuery):
     user = _db.get_user(owner_id)
     lang = (user or {}).get("language", "RUS")
 
-    # Проверяем что листает именно владелец
     if callback.from_user.id != owner_id:
         msg = "❌ Only the inventory owner can browse." if lang == "EN" else "❌ Листать может только владелец инвентаря."
         await callback.answer(msg, show_alert=True)
         return
-    items = _db.get_user_inventory(owner_id)
 
+    items = _db.get_user_inventory(owner_id)
     if not items:
         await callback.answer()
         return
 
-    # Имя берём из сообщения (forward_from недоступен, берём из БД или оставляем ID)
-    full_name = user.get("username") and f"@{user['username']}" or f"ID: {owner_id}"
-    # Попробуем взять из текста сообщения
-    if callback.message and callback.message.caption:
-        import re
-        m = re.search(r'<b>(?:Инвентарь |)(.+?)(?:\'s inventory)?:</b>', callback.message.caption)
-        if m:
-            full_name = m.group(1)
-    elif callback.message and callback.message.text:
-        import re
-        m = re.search(r'<b>(?:Инвентарь |)(.+?)(?:\'s inventory)?:</b>', callback.message.text)
-        if m:
-            full_name = m.group(1)
-
+    full_name = _db.get_display_name(owner_id, for_admin=False)
     text = _group_inv_text(items, lang, full_name, page=page)
     keyboard = _build_group_inv_keyboard(owner_id, page=page, total=len(items))
+    media_items = _page_media_items(items, page)
+
+    # Удаляем предыдущий альбом если был
+    fsm_data = await state.get_data()
+    prev_album_ids = fsm_data.get(f"ginv_album_{owner_id}", [])
+    if prev_album_ids:
+        for mid in prev_album_ids:
+            try:
+                await callback.bot.delete_message(callback.message.chat.id, mid)
+            except Exception:
+                pass
+        await state.update_data(**{f"ginv_album_{owner_id}": []})
+
+    current_has_photo = bool(callback.message.photo)
 
     try:
-        if callback.message.photo or callback.message.caption:
-            await callback.message.edit_caption(caption=text, reply_markup=keyboard, parse_mode="HTML")
+        if len(media_items) > 1:
+            # Несколько медиа — удаляем текущее сообщение, отправляем альбом + текст
+            await callback.message.delete()
+            album = []
+            for mi in media_items:
+                fid = mi["media_file_id"]
+                mtype = mi.get("media_type") or "photo"
+                if mtype == "video":
+                    album.append(InputMediaVideo(media=fid))
+                else:
+                    album.append(InputMediaPhoto(media=fid))
+            new_album_ids = []
+            try:
+                sent = await callback.message.answer_media_group(album)
+                new_album_ids = [m.message_id for m in sent] if sent else []
+            except Exception as e:
+                logger.warning(f"Failed to send group inventory album on page turn: {e}")
+            await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+            if new_album_ids:
+                await state.update_data(**{f"ginv_album_{owner_id}": new_album_ids})
+
+        elif len(media_items) == 1:
+            mi = media_items[0]
+            fid = mi["media_file_id"]
+            mtype = mi.get("media_type") or "photo"
+            if current_has_photo:
+                # Одно фото было и есть — меняем через edit_media
+                await callback.message.edit_media(
+                    InputMediaPhoto(media=fid, caption=text, parse_mode="HTML"),
+                    reply_markup=keyboard,
+                )
+            else:
+                # Фото не было, теперь есть — удаляем и отправляем
+                await callback.message.delete()
+                if mtype == "video":
+                    await callback.message.answer_video(fid, caption=text, reply_markup=keyboard, parse_mode="HTML")
+                else:
+                    await callback.message.answer_photo(fid, caption=text, reply_markup=keyboard, parse_mode="HTML")
+
         else:
-            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            # Нет медиа
+            if current_has_photo:
+                # Фото было, теперь нет — удаляем и отправляем текст
+                await callback.message.delete()
+                await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+            else:
+                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
     except Exception as e:
-        logger.warning(f"Failed to edit group inventory message: {e}")
+        logger.warning(f"Failed to update group inventory message: {e}")
 
     await callback.answer()
 

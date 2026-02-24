@@ -3,7 +3,7 @@ handlers/admin_broadcast.py — Система рассылки сообщени
 """
 
 from aiogram import Router, types, F
-from utils.log_events import log_broadcast
+from utils.log_events import log_broadcast, log_admin_action
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
@@ -11,7 +11,7 @@ from datetime import datetime
 import asyncio
 import logging
 
-from handlers.admin_common import db, is_admin, BroadcastStates, ChatStates
+from handlers.admin_common import db, is_admin, BroadcastStates, ChatStates, user_link
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -261,6 +261,15 @@ async def broadcast_confirmation(callback: types.CallbackQuery, state: FSMContex
         await callback.message.edit_text("🚫 Рассылка отменена")
         await state.clear()
         await callback.answer("🚫 Рассылка отменена")
+        try:
+            await log_admin_action(
+                callback.bot,
+                admin_id=callback.from_user.id,
+                admin_name=callback.from_user.full_name,
+                action="Рассылка отменена",
+            )
+        except Exception:
+            pass
         return
 
     data = await state.get_data()
@@ -275,6 +284,19 @@ async def broadcast_confirmation(callback: types.CallbackQuery, state: FSMContex
 
     total_users = len(users)
     await callback.message.edit_text(f"🔄 Рассылка начата для {total_users} пользователей...")
+
+    _lang_filter_pre = data.get("broadcast_filter_lang")
+    _target_str_pre = {"RUS": "🇷🇺 Русские", "ENG": "🇺🇸 Английские"}.get(_lang_filter_pre, "👥 Все пользователи")
+    try:
+        await log_admin_action(
+            callback.bot,
+            admin_id=admin_id,
+            admin_name=callback.from_user.full_name,
+            action="Запуск рассылки",
+            details=f"Аудитория: {_target_str_pre}, получателей: {total_users}",
+        )
+    except Exception:
+        pass
 
     # Определяем режим: альбом или одиночное сообщение
     group_msg_ids: list = data.get("broadcast_media_group_msg_ids") or []
@@ -304,15 +326,13 @@ async def broadcast_confirmation(callback: types.CallbackQuery, state: FSMContex
         except Exception as e:
             failed_count += 1
             error_msg = str(e)
-            user_info = f"ID: {user['user_id']}"
-            if user.get("username"):
-                user_info += f" (@{user['username']})"
+            _ulink = user_link(user["user_id"], user)
             if "Forbidden" in error_msg or "bot was blocked" in error_msg:
-                failed_list.append(f"{user_info} (заблокировал бота)")
+                failed_list.append(f"{_ulink} (заблокировал бота)")
             elif "chat not found" in error_msg:
-                failed_list.append(f"{user_info} (чат не найден)")
+                failed_list.append(f"{_ulink} (чат не найден)")
             else:
-                failed_list.append(f"{user_info} ({error_msg[:30]}...)")
+                failed_list.append(f"{_ulink} ({error_msg[:30]}...)")
 
     report = (
         f"✅ <b>Рассылка завершена!</b>\n\n"

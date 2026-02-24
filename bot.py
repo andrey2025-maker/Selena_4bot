@@ -192,6 +192,96 @@ async def auto_backup_task(bot: Bot):
             logger.error(f"❌ Ошибка в задаче бэкапа: {e}")
             await asyncio.sleep(300)
 
+async def auto_cleanup_task(db_instance: Database):
+    """
+    Фоновая задача автоочистки устаревших данных.
+    Запускается каждые сутки в 04:00.
+    Удаляет: завершённые обмены, сессии, запросы на выдачу, старые розыгрыши — старше 30 дней.
+    """
+    last_cleanup_date = None
+
+    # Небольшая задержка чтобы не мешать старту
+    await asyncio.sleep(30)
+
+    while True:
+        try:
+            now = datetime.now()
+            today = now.date()
+
+            if now.hour == 4 and now.minute == 0 and last_cleanup_date != today:
+                logger.info("🧹 Запуск автоочистки устаревших данных...")
+                result = db_instance.cleanup_old_data(days=14)
+                total = sum(result.values())
+                last_cleanup_date = today
+
+                if total > 0:
+                    details = ", ".join(f"{k}: {v}" for k, v in result.items() if v > 0)
+                    logger.info(f"🧹 Автоочистка завершена: удалено {total} записей ({details})")
+                else:
+                    logger.info("🧹 Автоочистка: нечего удалять")
+
+            await asyncio.sleep(60)
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка в задаче автоочистки: {e}")
+            await asyncio.sleep(300)
+
+
+async def stale_trades_cleanup_task(bot: Bot, db_instance: Database):
+    """
+    Фоновая задача: каждые 5 минут проверяет P2P-обмены в статусе 'selecting'/'confirming'.
+    Если обмен висит дольше 30 минут — отменяет его, разблокирует предметы
+    и уведомляет обоих участников.
+    """
+    STALE_MINUTES = 30
+    CHECK_INTERVAL = 5 * 60  # проверяем каждые 5 минут
+
+    await asyncio.sleep(60)  # небольшая задержка после старта
+
+    while True:
+        try:
+            stale = db_instance.get_stale_trades(older_than_minutes=STALE_MINUTES)
+            for trade in stale:
+                trade_id = trade['id']
+                initiator_id = trade['initiator_id']
+                partner_id = trade['partner_id']
+
+                cancelled = db_instance.cancel_item_trade(trade_id)
+                if not cancelled:
+                    continue
+
+                logger.info(
+                    f"⏰ Зависший обмен #{trade_id} отменён автоматически "
+                    f"(участники: {initiator_id}, {partner_id})"
+                )
+
+                # Уведомляем обоих участников
+                for uid in (initiator_id, partner_id):
+                    try:
+                        user = db_instance.get_user(uid)
+                        lang = (user or {}).get("language", "RUS")
+                        if lang == "RUS":
+                            text = (
+                                "⏰ <b>Обмен отменён автоматически</b>\n\n"
+                                "Обмен был неактивен более 30 минут и отменён.\n"
+                                "Ваши предметы разблокированы."
+                            )
+                        else:
+                            text = (
+                                "⏰ <b>Trade cancelled automatically</b>\n\n"
+                                "The trade was inactive for more than 30 minutes and was cancelled.\n"
+                                "Your items have been unlocked."
+                            )
+                        await bot.send_message(uid, text, parse_mode="HTML")
+                    except Exception as e:
+                        logger.warning(f"Не удалось уведомить {uid} об отмене обмена: {e}")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка в задаче stale_trades_cleanup: {e}")
+
+        await asyncio.sleep(CHECK_INTERVAL)
+
+
 async def main():
     """Основная функция запуска бота"""
     if not Config.BOT_TOKEN:
@@ -282,6 +372,12 @@ async def main():
 
         asyncio.create_task(refresh_keyboards_task(bot, db))
         logger.info("✅ Обновление клавиатур запущено")
+
+        asyncio.create_task(auto_cleanup_task(db))
+        logger.info("✅ Автоочистка БД запущена (ежедневно в 04:00)")
+
+        asyncio.create_task(stale_trades_cleanup_task(bot, db))
+        logger.info("✅ Проверка зависших обменов запущена (каждые 5 минут)")
 
     except Exception as e:
         logger.error(f"❌ Ошибка запуска фоновых задач: {e}")

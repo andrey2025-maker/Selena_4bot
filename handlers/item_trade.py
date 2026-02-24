@@ -46,6 +46,10 @@ db = Database()
 
 ITEMS_PER_PAGE = 8  # предметов на странице при выборе
 
+# Защита от двойного нажатия: множество (user_id, action_key) в обработке прямо сейчас.
+# Если запись есть — повторный вызов отклоняется немедленно.
+_in_progress: set = set()
+
 
 # ========== FSM ==========
 
@@ -60,13 +64,16 @@ class ItemTradeStates(StatesGroup):
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
-def _user_display(user: dict | None) -> str:
+def _user_display(user: dict | None, for_admin: bool = False) -> str:
+    """Публичное имя пользователя с учётом скрытых (псевдоним)."""
     if not user:
         return "?"
-    name = user.get("first_name") or user.get("username") or str(user.get("user_id", "?"))
+    uid = user.get("user_id")
+    if uid:
+        return db.get_display_name(uid, for_admin=for_admin)
     if user.get("username"):
         return f"@{user['username']}"
-    return name
+    return str(uid or "?")
 
 
 def _item_label(item: dict) -> str:
@@ -594,9 +601,9 @@ async def item_trade_accept(callback: CallbackQuery, state: FSMContext):
     await log_item_trade_start(
         callback.bot,
         initiator_id=initiator_id,
-        initiator_name=_user_display(initiator_for_log),
+        initiator_name=_user_display(initiator_for_log, for_admin=True),
         partner_id=user_id,
-        partner_name=_user_display(user),
+        partner_name=_user_display(user, for_admin=True),
     )
 
     # Устанавливаем состояние для партнёра
@@ -887,13 +894,25 @@ async def item_trade_done_selecting(callback: CallbackQuery, state: FSMContext):
 async def item_trade_confirm(callback: CallbackQuery, state: FSMContext):
     """Участник нажал «Подтвердить» — переходим к финальному экрану."""
     trade_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    lock_key = (user_id, f"confirm_{trade_id}")
+    if lock_key in _in_progress:
+        await callback.answer("⏳ Обрабатывается…", show_alert=False)
+        return
+    _in_progress.add(lock_key)
+    try:
+        await _item_trade_confirm_inner(callback, state, trade_id, user_id)
+    finally:
+        _in_progress.discard(lock_key)
+
+
+async def _item_trade_confirm_inner(callback: CallbackQuery, state: FSMContext, trade_id: int, user_id: int):
     trade = db.get_item_trade(trade_id)
 
     if not trade or trade['status'] not in ('selecting', 'confirming'):
         await callback.answer("❌ Обмен недоступен", show_alert=True)
         return
 
-    user_id = callback.from_user.id
     if user_id not in (trade['initiator_id'], trade['partner_id']):
         await callback.answer("⛔ Не ваш обмен", show_alert=True)
         return
@@ -999,13 +1018,25 @@ async def item_trade_confirm(callback: CallbackQuery, state: FSMContext):
 async def item_trade_final_confirm(callback: CallbackQuery, state: FSMContext):
     """Финальное подтверждение — оба нажали, выполняем обмен."""
     trade_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    lock_key = (user_id, f"final_{trade_id}")
+    if lock_key in _in_progress:
+        await callback.answer("⏳ Обрабатывается…", show_alert=False)
+        return
+    _in_progress.add(lock_key)
+    try:
+        await _item_trade_final_confirm_inner(callback, state, trade_id, user_id)
+    finally:
+        _in_progress.discard(lock_key)
+
+
+async def _item_trade_final_confirm_inner(callback: CallbackQuery, state: FSMContext, trade_id: int, user_id: int):
     trade = db.get_item_trade(trade_id)
 
     if not trade or trade['status'] not in ('selecting', 'confirming'):
         await callback.answer("❌ Обмен недоступен", show_alert=True)
         return
 
-    user_id = callback.from_user.id
     if user_id not in (trade['initiator_id'], trade['partner_id']):
         await callback.answer("⛔ Не ваш обмен", show_alert=True)
         return
@@ -1092,9 +1123,9 @@ async def item_trade_final_confirm(callback: CallbackQuery, state: FSMContext):
         await log_item_trade_complete(
             callback.bot,
             initiator_id=trade['initiator_id'],
-            initiator_name=_user_display(_init),
+            initiator_name=_user_display(_init, for_admin=True),
             partner_id=trade['partner_id'],
-            partner_name=_user_display(_part),
+            partner_name=_user_display(_part, for_admin=True),
             initiator_items=_init_items,
             partner_items=_part_items,
         )
@@ -1273,9 +1304,9 @@ async def item_trade_cancel(callback: CallbackQuery, state: FSMContext):
     await log_item_trade_cancel(
         callback.bot,
         cancelled_by_id=user_id,
-        cancelled_by_name=_user_display(user),
+        cancelled_by_name=_user_display(user, for_admin=True),
         other_id=other_id,
-        other_name=_user_display(other),
+        other_name=_user_display(other, for_admin=True),
     )
 
     try:

@@ -118,6 +118,31 @@ async def log_inventory_remove(
     await send_log(bot, text)
 
 
+async def log_inventory_transfer(
+    bot: Bot,
+    *,
+    admin_id: int,
+    admin_name: str,
+    from_user_id: int,
+    from_user_name: str,
+    to_user_id: int,
+    to_user_name: str,
+    item_name: str,
+    quantity: int = 1,
+) -> None:
+    """Залогировать передачу предметов между пользователями через администратора."""
+    qty_str = f" ×{quantity}" if quantity > 1 else ""
+    text = (
+        f"🔁 <b>Передача предметов</b>\n"
+        f"📤 От: {_user_link(from_user_id, from_user_name)}\n"
+        f"📥 Кому: {_user_link(to_user_id, to_user_name)}\n"
+        f"🧑‍💼 Администратор: {_user_link(admin_id, admin_name, is_admin=True)}\n"
+        f"📦 Предметы: <b>{item_name}</b>{qty_str}\n"
+        f"🕐 {_now()}"
+    )
+    await send_log(bot, text)
+
+
 async def log_inventory_pickup_request(
     bot: Bot,
     *,
@@ -385,6 +410,30 @@ async def log_exception_removed(
 # ─────────────────────────────────────────────
 #  СМЕНА ROBLOX-НИКНЕЙМОВ
 # ─────────────────────────────────────────────
+
+async def log_admin_action(
+    bot: Bot,
+    *,
+    admin_id: int,
+    admin_name: str,
+    action: str,
+    details: str = "",
+) -> None:
+    """Универсальный лог действия администратора.
+
+    action  — краткое название действия (например «Запуск рассылки», «Создан бэкап»).
+    details — дополнительные подробности (необязательно).
+    """
+    text = (
+        f"🧑‍💼 <b>Действие администратора</b>\n"
+        f"👑 Администратор: {_user_link(admin_id, admin_name, is_admin=True)}\n"
+        f"📌 Действие: <b>{action}</b>\n"
+    )
+    if details:
+        text += f"📋 Подробности: {details}\n"
+    text += f"🕐 {_now()}"
+    await send_log(bot, text)
+
 
 async def log_roblox_nick_changed(
     bot: Bot,

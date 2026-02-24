@@ -251,6 +251,25 @@ class Database:
                 )
             ''')
 
+            # Топики группы для чатов администратора с пользователями
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_chat_topics (
+                    user_id INTEGER PRIMARY KEY,
+                    topic_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Скрытые пользователи — псевдоним вместо TG-ника/ID для публичного отображения
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS hidden_users (
+                    user_id INTEGER PRIMARY KEY,
+                    alias TEXT NOT NULL,
+                    added_by INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # Создаем индексы для ускорения запросов
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_subscribed ON users(is_subscribed)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_fruits_user ON user_fruits(user_id)')
@@ -550,6 +569,31 @@ class Database:
         with self.get_connection() as conn:
             rows = conn.execute('SELECT user_id, admin_id FROM active_chats').fetchall()
         return {row[0]: row[1] for row in rows}
+
+    # ========== ТОПИКИ ЧАТОВ АДМИНИСТРАТОРА ==========
+
+    def get_chat_topic(self, user_id: int) -> Optional[int]:
+        """Вернуть topic_id для чата с пользователем, или None если не было."""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                'SELECT topic_id FROM admin_chat_topics WHERE user_id = ?', (user_id,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_chat_topic(self, user_id: int, topic_id: int):
+        """Сохранить (или обновить) topic_id для чата с пользователем."""
+        with self.get_connection() as conn:
+            conn.execute(
+                'INSERT OR REPLACE INTO admin_chat_topics (user_id, topic_id) VALUES (?, ?)',
+                (user_id, topic_id)
+            )
+            conn.commit()
+
+    def delete_chat_topic(self, user_id: int):
+        """Удалить запись о топике (например, если топик был закрыт)."""
+        with self.get_connection() as conn:
+            conn.execute('DELETE FROM admin_chat_topics WHERE user_id = ?', (user_id,))
+            conn.commit()
 
     # ========== МЕТОДЫ ДЛЯ ИНВЕНТАРЯ ==========
 
@@ -1158,6 +1202,40 @@ class Database:
                     d[field] = {}
             return d
 
+    def get_stale_trades(self, older_than_minutes: int = 30) -> List[Dict]:
+        """Вернуть P2P-обмены в статусе 'selecting' или 'confirming',
+        которые созданы дольше older_than_minutes минут назад.
+
+        Сравнение идёт по локальному времени (created_at хранится через datetime.now()),
+        поэтому порог передаётся как Python-строка, а не через datetime('now') SQLite.
+        """
+        import json
+        from datetime import datetime, timedelta
+        threshold = (datetime.now() - timedelta(minutes=older_than_minutes)).strftime('%Y-%m-%d %H:%M:%S')
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM item_trades
+                WHERE status IN ('selecting', 'confirming')
+                  AND created_at <= ?
+            ''', (threshold,))
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                for field in ('initiator_items', 'partner_items'):
+                    try:
+                        d[field] = json.loads(d[field])
+                    except Exception:
+                        d[field] = []
+                for field in ('initiator_qty', 'partner_qty'):
+                    try:
+                        d[field] = json.loads(d[field])
+                    except Exception:
+                        d[field] = {}
+                result.append(d)
+            return result
+
     def update_item_trade_offer(self, trade_id: int, user_id: int,
                                  item_ids: List[int], qty_map: dict) -> bool:
         """Обновить предложение участника (список предметов + количества)."""
@@ -1187,7 +1265,7 @@ class Database:
         Атомарно установить подтверждение участника.
         Использует BEGIN EXCLUSIVE чтобы исключить race condition при одновременном
         нажатии «Подтвердить» обоими участниками.
-        Возвращает обновлённую сессию.
+        Возвращает обновлённую сессию или {} если обмен уже завершён/отменён.
         """
         with self.get_connection() as conn:
             conn.execute("BEGIN EXCLUSIVE")
@@ -1198,6 +1276,10 @@ class Database:
                 conn.rollback()
                 return {}
             trade = dict(row)
+            # Не подтверждаем уже выполняющийся или завершённый обмен
+            if trade['status'] in ('done', 'executing', 'cancelled'):
+                conn.rollback()
+                return trade
             if trade['initiator_id'] == user_id:
                 cursor.execute(
                     'UPDATE item_trades SET initiator_confirmed=1, status=? WHERE id=?',
@@ -1215,12 +1297,56 @@ class Database:
         """
         Атомарно выполнить обмен: переместить предметы между пользователями.
         Возвращает True при успехе.
+
+        Защита от двойного нажатия: BEGIN EXCLUSIVE + проверка статуса внутри транзакции.
+        Если два запроса придут одновременно — второй увидит статус 'done' и вернёт False.
         """
         import json
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                # Блокируем таблицу эксклюзивно — только один поток войдёт
+                conn.execute("BEGIN EXCLUSIVE")
+
+                # Перечитываем статус внутри транзакции — защита от race condition
+                cursor.execute("SELECT * FROM item_trades WHERE id=?", (trade_id,))
+                row = cursor.fetchone()
+                if not row:
+                    conn.rollback()
+                    return False
+                trade = dict(row)
+
+                if trade['status'] != 'confirming':
+                    # Уже выполнен или отменён другим запросом
+                    conn.rollback()
+                    return False
+                if not (trade['initiator_confirmed'] and trade['partner_confirmed']):
+                    conn.rollback()
+                    return False
+
+                # Сразу помечаем как 'executing' чтобы второй вызов не прошёл
+                cursor.execute(
+                    "UPDATE item_trades SET status='executing' WHERE id=? AND status='confirming'",
+                    (trade_id,)
+                )
+                if cursor.rowcount == 0:
+                    # Другой поток уже захватил — отступаем
+                    conn.rollback()
+                    return False
+
+                conn.commit()
+            except Exception as e:
+                logger.error(f"execute_item_trade lock error: {e}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return False
+
+        # Теперь безопасно читаем данные — мы единственные владельцы этого обмена
         trade = self.get_item_trade(trade_id)
-        if not trade or trade['status'] != 'confirming':
-            return False
-        if not (trade['initiator_confirmed'] and trade['partner_confirmed']):
+        if not trade:
             return False
 
         initiator_id = trade['initiator_id']
@@ -1327,9 +1453,12 @@ class Database:
                 return False
 
     def cancel_item_trade(self, trade_id: int) -> bool:
-        """Отменить P2P-обмен и снять блокировку предметов."""
+        """Отменить P2P-обмен и снять блокировку предметов.
+        Нельзя отменить уже выполняющийся или завершённый обмен."""
         trade = self.get_item_trade(trade_id)
         if not trade:
+            return False
+        if trade['status'] in ('done', 'executing'):
             return False
         all_ids = trade['initiator_items'] + trade['partner_items']
         with self.get_connection() as conn:
@@ -1341,7 +1470,8 @@ class Database:
                     all_ids
                 )
             cursor.execute(
-                "UPDATE item_trades SET status='cancelled' WHERE id=?", (trade_id,)
+                "UPDATE item_trades SET status='cancelled' WHERE id=? AND status NOT IN ('done','executing')",
+                (trade_id,)
             )
             conn.commit()
         return True
@@ -1433,6 +1563,135 @@ class Database:
             'exact_index': exact_index,
             'nearest_index': nearest_index,
         }
+
+    def cleanup_old_data(self, days: int = 30) -> dict:
+        """
+        Удаляет устаревшие данные из всех таблиц.
+        Возвращает словарь с количеством удалённых записей по каждой таблице.
+
+        Что удаляется:
+          - item_trades:        завершённые/отменённые обмены старше days дней
+          - trade_sessions:     завершённые сессии обменов через админа старше days дней
+          - pickup_requests:    выполненные/отменённые запросы на выдачу старше days дней
+          - giveaway_participants: участники завершённых розыгрышей (розыгрыш ended_at > days)
+          - giveaways:          завершённые розыгрыши старше days дней (каскадно удалит prizes и participants)
+        """
+        result = {}
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # 1. item_trades — завершённые/отменённые P2P-обмены
+            cursor.execute('''
+                DELETE FROM item_trades
+                WHERE status IN ('done', 'completed', 'cancelled')
+                  AND created_at < datetime('now', ? || ' days')
+            ''', (f'-{days}',))
+            result['item_trades'] = cursor.rowcount
+
+            # 2. trade_sessions — завершённые сессии обменов через админа
+            cursor.execute('''
+                DELETE FROM trade_sessions
+                WHERE status IN ('finished', 'ended')
+                  AND ended_at < datetime('now', ? || ' days')
+            ''', (f'-{days}',))
+            result['trade_sessions'] = cursor.rowcount
+
+            # 3. pickup_requests — выполненные/отменённые запросы на выдачу
+            cursor.execute('''
+                DELETE FROM pickup_requests
+                WHERE status IN ('completed', 'cancelled', 'done')
+                  AND created_at < datetime('now', ? || ' days')
+            ''', (f'-{days}',))
+            result['pickup_requests'] = cursor.rowcount
+
+            # 4. giveaways — завершённые розыгрыши (каскадно удалит prizes и participants)
+            cursor.execute('''
+                DELETE FROM giveaways
+                WHERE status IN ('ended', 'cancelled')
+                  AND ended_at < datetime('now', ? || ' days')
+            ''', (f'-{days}',))
+            result['giveaways'] = cursor.rowcount
+
+            conn.commit()
+
+        # VACUUM только если удалено что-то значимое (освобождает место на диске)
+        total_deleted = sum(result.values())
+        if total_deleted > 0:
+            with self.get_connection() as conn:
+                conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            logger.info(f"Cleanup: удалено {total_deleted} записей: {result}")
+        else:
+            logger.info("Cleanup: нечего удалять, БД актуальна")
+
+        return result
+
+    # ──────────────────────────────────────────────────────────────
+    # HIDDEN USERS — скрытые пользователи (псевдоним вместо TG-ника)
+    # ──────────────────────────────────────────────────────────────
+
+    def add_hidden_user(self, user_id: int, alias: str, added_by: int) -> bool:
+        """Добавить/обновить псевдоним скрытого пользователя."""
+        with self.get_connection() as conn:
+            try:
+                conn.execute('''
+                    INSERT INTO hidden_users (user_id, alias, added_by)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET alias=excluded.alias, added_by=excluded.added_by
+                ''', (user_id, alias, added_by))
+                conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"add_hidden_user error: {e}")
+                return False
+
+    def remove_hidden_user(self, user_id: int) -> bool:
+        """Убрать пользователя из скрытых."""
+        with self.get_connection() as conn:
+            cur = conn.execute('DELETE FROM hidden_users WHERE user_id=?', (user_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_hidden_user(self, user_id: int) -> Optional[Dict]:
+        """Получить запись скрытого пользователя или None."""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                'SELECT * FROM hidden_users WHERE user_id=?', (user_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_all_hidden_users(self) -> List[Dict]:
+        """Список всех скрытых пользователей."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                'SELECT * FROM hidden_users ORDER BY created_at DESC'
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_display_name(self, user_id: int, for_admin: bool = False) -> str:
+        """
+        Публичное имя пользователя.
+        - for_admin=True  → всегда реальные данные (@username или ID:xxx)
+        - for_admin=False → псевдоним если скрыт, иначе реальные данные
+        """
+        if not for_admin:
+            hidden = self.get_hidden_user(user_id)
+            if hidden:
+                return hidden['alias']
+        user = self.get_user(user_id)
+        if user and user.get('username'):
+            return f"@{user['username']}"
+        return f"ID:{user_id}"
+
+    def get_user_by_username(self, username: str) -> Optional[Dict]:
+        """Найти пользователя по username (без @, без учёта регистра)."""
+        uname = username.lstrip('@').lower()
+        with self.get_connection() as conn:
+            rows = conn.execute('SELECT * FROM users').fetchall()
+            for row in rows:
+                r = dict(row)
+                if r.get('username') and r['username'].lower() == uname:
+                    return r
+        return None
 
     def get_unlocked_inventory(self, user_id: int) -> List[Dict]:
         """Получить предметы инвентаря, не заблокированные в обмене."""

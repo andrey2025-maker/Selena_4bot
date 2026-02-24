@@ -155,6 +155,17 @@ class Config:
     _trade_group_raw = os.getenv("TRADE_ADMIN_GROUP_ID", "").strip()
     TRADE_ADMIN_GROUP_ID = int(_trade_group_raw) if _trade_group_raw else None
 
+    # ID группы для чатов администратора с пользователями (с поддержкой тем/топиков).
+    # Если не задана — используется TRADE_ADMIN_GROUP_ID (та же группа).
+    # None = функция чата через группу недоступна.
+    _chat_group_raw = os.getenv("CHAT_ADMIN_GROUP_ID", "").strip()
+    if _chat_group_raw:
+        CHAT_ADMIN_GROUP_ID = int(_chat_group_raw)
+    elif _trade_group_raw:
+        CHAT_ADMIN_GROUP_ID = int(_trade_group_raw)
+    else:
+        CHAT_ADMIN_GROUP_ID = None
+
     # ID группы для логов (инвентарь, обмены, розыгрыши, рассылки и т.д.)
     # 0 = логирование отключено
     LOG_GROUP_ID = int(os.getenv("LOG_GROUP_ID", 0)) if os.getenv("LOG_GROUP_ID", "").strip() else 0
