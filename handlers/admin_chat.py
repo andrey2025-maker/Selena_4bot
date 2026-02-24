@@ -180,7 +180,11 @@ async def choose_chat_channel(callback: types.CallbackQuery, state: FSMContext):
 
 async def _start_bot_chat(target: Message, state: FSMContext, user: dict, user_id: int, user_info: str):
     """Запустить чат через ЛС бота (старое поведение)."""
-    admin_id = target.from_user.id if hasattr(target, 'from_user') else (await state.get_data()).get('admin_id')
+    admin_id = (
+        target.from_user.id
+        if (hasattr(target, 'from_user') and target.from_user)
+        else (await state.get_data()).get('admin_id')
+    )
 
     lang_code = "ru" if (user or {}).get("language", "RUS") == "RUS" else "en"
     notification = (
@@ -226,7 +230,11 @@ async def _start_bot_chat(target: Message, state: FSMContext, user: dict, user_i
 async def _start_group_chat(target: Message, state: FSMContext, user: dict, user_id: int, user_info: str, bot):
     """Запустить чат через топик группы."""
     from aiogram import Bot as AiogramBot
-    admin_id = target.from_user.id if hasattr(target, 'from_user') else (await state.get_data()).get('admin_id')
+    admin_id = (
+        target.from_user.id
+        if (hasattr(target, 'from_user') and target.from_user)
+        else (await state.get_data()).get('admin_id')
+    )
 
     if not Config.CHAT_ADMIN_GROUP_ID:
         await target.answer("❌ Группа для чатов не настроена (CHAT_ADMIN_GROUP_ID).")
@@ -403,13 +411,19 @@ async def cmd_active_chats(message: Message):
         await message.answer("📭 Нет активных чатов")
         return
     text = "💬 <b>Активные чаты:</b>\n\n"
-    for uid, admin_id in active_chats.items():
+    for uid, entry in active_chats.items():
         user = db.get_user(uid)
         if user and user.get("username"):
-            user_link = f"<a href='tg://user?id={uid}'>@{user['username']}</a>"
+            u_link = f"<a href='tg://user?id={uid}'>@{user['username']}</a>"
         else:
-            user_link = f"<a href='tg://user?id={uid}'>ID: {uid}</a>"
-        text += f"👤 {user_link} → 👑 Админ: {admin_id}\n"
+            u_link = f"<a href='tg://user?id={uid}'>ID: {uid}</a>"
+        if isinstance(entry, dict):
+            adm_id = entry.get("admin_id", "?")
+            mode = entry.get("mode", "bot")
+        else:
+            adm_id = entry
+            mode = "bot"
+        text += f"👤 {u_link} → 👑 Админ: {adm_id} [{mode}]\n"
     await message.answer(text, parse_mode="HTML")
 
 

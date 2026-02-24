@@ -671,8 +671,19 @@ async def item_trade_decline(callback: CallbackQuery, state: FSMContext):
     await callback.message.delete()
     await callback.answer(locale_manager.get_text(lc, "item_trade.you_declined"), show_alert=True)
 
-    # Уведомляем инициатора
+    # Очищаем FSM инициатора
     initiator_id = trade['initiator_id']
+    try:
+        from aiogram.fsm.storage.base import StorageKey
+        from aiogram.fsm.context import FSMContext as FSMCtx
+        bot_id = (await callback.bot.get_me()).id
+        init_key = StorageKey(bot_id=bot_id, chat_id=initiator_id, user_id=initiator_id)
+        init_fsm = FSMCtx(storage=state.storage, key=init_key)
+        await init_fsm.clear()
+    except Exception:
+        pass
+
+    # Уведомляем инициатора
     initiator = db.get_user(initiator_id)
     init_lang = initiator.get("language", "RUS") if initiator else "RUS"
     init_lc = "ru" if init_lang == "RUS" else "en"
@@ -1159,6 +1170,7 @@ async def _item_trade_final_confirm_inner(callback: CallbackQuery, state: FSMCon
                 )
             except Exception:
                 pass
+        await partner_fsm.clear()
         await state.clear()
     else:
         db.cancel_item_trade(trade_id)
@@ -1294,12 +1306,23 @@ async def item_trade_cancel(callback: CallbackQuery, state: FSMContext):
     db.cancel_item_trade(trade_id)
     await state.clear()
 
+    # Очищаем FSM партнёра
+    other_id = trade['partner_id'] if trade['initiator_id'] == user_id else trade['initiator_id']
+    try:
+        from aiogram.fsm.storage.base import StorageKey
+        from aiogram.fsm.context import FSMContext as FSMCtx
+        bot_id = (await callback.bot.get_me()).id
+        other_key = StorageKey(bot_id=bot_id, chat_id=other_id, user_id=other_id)
+        other_fsm = FSMCtx(storage=state.storage, key=other_key)
+        await other_fsm.clear()
+    except Exception:
+        pass
+
     user = db.get_user(user_id)
     lang = user.get("language", "RUS") if user else "RUS"
     lc = "ru" if lang == "RUS" else "en"
 
     # Лог: отмена обмена
-    other_id = trade['partner_id'] if trade['initiator_id'] == user_id else trade['initiator_id']
     other = db.get_user(other_id)
     await log_item_trade_cancel(
         callback.bot,

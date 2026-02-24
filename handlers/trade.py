@@ -77,7 +77,7 @@ async def _notify_admins(bot: Bot, text: str, reply_markup: InlineKeyboardMarkup
     """Отправить уведомление всем администраторам в ЛС."""
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(admin_id, text, reply_markup=reply_markup)
+            await bot.send_message(admin_id, text, reply_markup=reply_markup, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"Failed to notify admin {admin_id}: {e}")
 
@@ -92,6 +92,7 @@ async def _send_to_topic(bot: Bot, topic_id: int, text: str):
             chat_id=Config.TRADE_ADMIN_GROUP_ID,
             message_thread_id=topic_id,
             text=text,
+            parse_mode="HTML",
         )
     except Exception as e:
         logger.warning(f"Failed to send to topic {topic_id}: {e}")
@@ -136,6 +137,7 @@ async def _create_topic(bot: Bot, user1_id: int, user2_id: int, nick1: str, nick
             chat_id=Config.TRADE_ADMIN_GROUP_ID,
             message_thread_id=topic_id,
             text=header_text,
+            parse_mode="HTML",
         )
         try:
             await bot.pin_chat_message(

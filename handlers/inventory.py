@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 db = Database()
 
-from handlers.admin_common import ADMIN_IDS, is_admin
+from handlers.admin_common import ADMIN_IDS, is_admin, active_chats, ChatStates
 
 
 # ========== СПРАВОЧНИКИ ДЛЯ ДОБАВЛЕНИЯ ==========
@@ -238,10 +238,14 @@ def _build_pickup_keyboard(items: list, selected_ids: List[int], lang: str) -> I
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def _build_admin_delete_keyboard(items: list, selected_ids: List[int], target_user_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура выбора предметов для удаления (для админа)"""
+def _build_admin_delete_keyboard(items: list, selected_ids: List[int], target_user_id: int, page: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура выбора предметов для удаления (для админа) с пагинацией."""
+    total_pages = max(1, (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    page_items = items[page * ITEMS_PER_PAGE: (page + 1) * ITEMS_PER_PAGE]
+
     keyboard = []
-    for item in items:
+    for item in page_items:
         item_id = item["id"]
         checked = item_id in selected_ids
         mark = "✅" if checked else "☑️"
@@ -252,6 +256,17 @@ def _build_admin_delete_keyboard(items: list, selected_ids: List[int], target_us
                 callback_data=f"inv_adm_toggle_{item_id}_{target_user_id}"
             )
         ])
+
+    # Пагинация
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"inv_adm_del_pg_{target_user_id}_{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="inv_adm_del_pg_noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton(text="➡️", callback_data=f"inv_adm_del_pg_{target_user_id}_{page + 1}"))
+        keyboard.append(nav)
+
     keyboard.append([
         InlineKeyboardButton(text="✔️ Выбрать все", callback_data=f"inv_adm_selall_{target_user_id}"),
         InlineKeyboardButton(text="🔙 Назад", callback_data=f"inv_adm_view_{target_user_id}"),
@@ -923,7 +938,7 @@ async def _finalize_pickup(target, state: FSMContext, user, user_id: int,
 
 @router.callback_query(F.data.startswith("inv_adm_chat_"))
 async def admin_chat_from_pickup(callback: CallbackQuery, state: FSMContext):
-    """Начать чат с пользователем из уведомления о выдаче"""
+    """Начать чат с пользователем из уведомления о выдаче — предлагает выбор канала."""
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав", show_alert=True)
         return
@@ -931,34 +946,74 @@ async def admin_chat_from_pickup(callback: CallbackQuery, state: FSMContext):
     target_user_id = int(callback.data.split("_")[3])
     user = db.get_user(target_user_id)
 
-    from handlers.admin_common import active_chats, ChatStates
-
-    active_chats[target_user_id] = callback.from_user.id
-    db.set_active_chat(target_user_id, callback.from_user.id)  # сохраняем в БД
-
-    user_lang = user.get("language", "RUS") if user else "RUS"
-    if user_lang == "RUS":
-        notification = "👤 <b>С Вами связался администратор</b>\n\nДля завершения диалога напишите /stop"
+    if user and user.get("username"):
+        user_info = f'<a href="tg://user?id={target_user_id}">@{user["username"]}</a>'
     else:
-        notification = "👤 <b>An administrator has contacted you</b>\n\nType /stop to end the conversation"
+        user_info = f'<a href="tg://user?id={target_user_id}">ID: {target_user_id}</a>'
 
-    try:
-        await callback.bot.send_message(target_user_id, notification, parse_mode="HTML")
-    except Exception as e:
-        await callback.answer(f"❌ Не удалось отправить уведомление: {e}", show_alert=True)
-        del active_chats[target_user_id]
-        db.remove_active_chat(target_user_id)
+    await state.update_data(
+        chat_with_user=target_user_id,
+        chat_user_info=user_info,
+        admin_id=callback.from_user.id,
+    )
+
+    if Config.CHAT_ADMIN_GROUP_ID:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💬 В боте", callback_data=f"inv_chat_ch_bot_{target_user_id}"),
+                InlineKeyboardButton(text="👥 В группе (топик)", callback_data=f"inv_chat_ch_grp_{target_user_id}"),
+            ],
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="inv_chat_ch_cancel")],
+        ])
+        await callback.message.answer(
+            f"👤 Пользователь: <b>{user_info}</b>\n\nГде вести переписку?",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        await state.set_state(ChatStates.choosing_channel)
+    else:
+        # Группа не настроена — сразу запускаем чат в боте
+        from handlers.admin_chat import _start_bot_chat
+        await _start_bot_chat(callback.message, state, user, target_user_id, user_info)
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("inv_chat_ch_"))
+async def admin_chat_channel_from_pickup(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора канала чата из уведомления о выдаче."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
         return
 
-    await state.set_state(ChatStates.chatting)
-    await state.update_data(chat_with_user=target_user_id)
+    action = callback.data  # inv_chat_ch_bot_<id> | inv_chat_ch_grp_<id> | inv_chat_ch_cancel
 
-    user_display = _user_display(user)
-    await callback.message.answer(
-        f"✅ Чат начат с пользователем {user_display}\n"
-        f"Для завершения отправьте /stop"
-    )
+    if action == "inv_chat_ch_cancel":
+        await callback.message.edit_text("🚫 Операция отменена")
+        await state.clear()
+        await callback.answer()
+        return
+
+    parts = action.split("_")
+    # inv_chat_ch_bot_<id>  → parts = ['inv','chat','ch','bot','<id>']
+    # inv_chat_ch_grp_<id>  → parts = ['inv','chat','ch','grp','<id>']
+    channel = parts[3]  # 'bot' или 'grp'
+    target_user_id = int(parts[4])
+
+    data = await state.get_data()
+    user_info = data.get("chat_user_info", str(target_user_id))
+    user = db.get_user(target_user_id)
+
     await callback.answer()
+
+    from handlers.admin_chat import _start_bot_chat, _start_group_chat
+
+    if channel == "bot":
+        await callback.message.edit_text(f"💬 Запускаю чат с {user_info}…", parse_mode="HTML")
+        await _start_bot_chat(callback.message, state, user, target_user_id, user_info)
+    else:
+        await callback.message.edit_text(f"👥 Создаю топик для {user_info}…", parse_mode="HTML")
+        await _start_group_chat(callback.message, state, user, target_user_id, user_info, callback.bot)
 
 
 @router.callback_query(F.data.startswith("inv_adm_take_"))
@@ -1220,16 +1275,30 @@ async def admin_select_inventory_user(message: Message, state: FSMContext):
     await _show_admin_user_inventory(message, user["user_id"])
 
 
-async def _show_admin_user_inventory(target, user_id: int, edit: bool = False):
-    """Показать инвентарь пользователя администратору"""
+async def _show_admin_user_inventory(target, user_id: int, edit: bool = False, page: int = 0):
+    """Показать инвентарь пользователя администратору с пагинацией."""
     user = db.get_user(user_id)
     items = db.get_user_inventory(user_id)
     user_display = _user_display(user)
 
+    total_pages = max(1, (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+
     title = f"🎒 <b>Инвентарь {user_display}:</b>"
-    text = _inventory_text(items, "RUS", title=title)
+    text = _inventory_text(items, "RUS", title=title, page=page, all_items=items)
 
     keyboard_buttons = []
+
+    # Пагинация
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"inv_adm_pg_{user_id}_{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="inv_adm_pg_noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton(text="➡️", callback_data=f"inv_adm_pg_{user_id}_{page + 1}"))
+        keyboard_buttons.append(nav)
+
     if items:
         keyboard_buttons.append([
             InlineKeyboardButton(text="🗑 Удалить предметы", callback_data=f"inv_adm_del_mode_{user_id}"),
@@ -1266,6 +1335,22 @@ async def admin_view_user_inventory(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("inv_adm_pg_"))
+async def admin_inventory_page(callback: CallbackQuery):
+    """Листание страниц инвентаря в режиме просмотра."""
+    if callback.data == "inv_adm_pg_noop":
+        await callback.answer()
+        return
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+    parts = callback.data.split("_")
+    user_id = int(parts[3])
+    page = int(parts[4])
+    await _show_admin_user_inventory(callback, user_id, edit=True, page=page)
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("inv_adm_del_mode_"))
 async def admin_enter_delete_mode(callback: CallbackQuery, state: FSMContext):
     """Войти в режим удаления предметов"""
@@ -1281,12 +1366,12 @@ async def admin_enter_delete_mode(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.set_state(AdminInventoryStates.selecting_delete)
-    await state.update_data(selected_ids=[], target_user_id=target_user_id)
+    await state.update_data(selected_ids=[], target_user_id=target_user_id, del_page=0)
 
     user = db.get_user(target_user_id)
     user_display = _user_display(user)
 
-    keyboard = _build_admin_delete_keyboard(items, [], target_user_id)
+    keyboard = _build_admin_delete_keyboard(items, [], target_user_id, page=0)
     await callback.message.edit_text(
         f"🗑 <b>Удаление предметов из инвентаря {user_display}</b>\n\nВыберите предметы для удаления:",
         reply_markup=keyboard,
@@ -1308,6 +1393,7 @@ async def admin_toggle_delete_item(callback: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     selected_ids: List[int] = data.get("selected_ids", [])
+    del_page: int = data.get("del_page", 0)
 
     if item_id in selected_ids:
         selected_ids.remove(item_id)
@@ -1317,7 +1403,7 @@ async def admin_toggle_delete_item(callback: CallbackQuery, state: FSMContext):
     await state.update_data(selected_ids=selected_ids)
 
     items = db.get_user_inventory(target_user_id)
-    keyboard = _build_admin_delete_keyboard(items, selected_ids, target_user_id)
+    keyboard = _build_admin_delete_keyboard(items, selected_ids, target_user_id, page=del_page)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
     await callback.answer()
 
@@ -1333,6 +1419,7 @@ async def admin_select_all_delete(callback: CallbackQuery, state: FSMContext):
     items = db.get_user_inventory(target_user_id)
     data = await state.get_data()
     selected_ids: List[int] = data.get("selected_ids", [])
+    del_page: int = data.get("del_page", 0)
     all_ids = [item["id"] for item in items]
 
     if set(selected_ids) == set(all_ids):
@@ -1341,7 +1428,28 @@ async def admin_select_all_delete(callback: CallbackQuery, state: FSMContext):
         selected_ids = all_ids
 
     await state.update_data(selected_ids=selected_ids)
-    keyboard = _build_admin_delete_keyboard(items, selected_ids, target_user_id)
+    keyboard = _build_admin_delete_keyboard(items, selected_ids, target_user_id, page=del_page)
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("inv_adm_del_pg_"), AdminInventoryStates.selecting_delete)
+async def admin_delete_page(callback: CallbackQuery, state: FSMContext):
+    """Листание страниц в режиме удаления."""
+    if callback.data == "inv_adm_del_pg_noop":
+        await callback.answer()
+        return
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+    parts = callback.data.split("_")
+    target_user_id = int(parts[4])
+    page = int(parts[5])
+    data = await state.get_data()
+    selected_ids: List[int] = data.get("selected_ids", [])
+    await state.update_data(del_page=page)
+    items = db.get_user_inventory(target_user_id)
+    keyboard = _build_admin_delete_keyboard(items, selected_ids, target_user_id, page=page)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
     await callback.answer()
 
@@ -1369,10 +1477,29 @@ async def admin_delete_selected_items(callback: CallbackQuery, state: FSMContext
             items_with_qty.append(item)
 
     if not items_with_qty:
-        # Все предметы с qty=1 — удаляем сразу
+        # Все предметы с qty=1 — удаляем сразу и пишем лог
+        deleted_items = []
+        for iid in selected_ids:
+            item = db.get_inventory_item(iid)
+            if item:
+                deleted_items.append((item.get("name", str(iid)), 1))
         db.remove_inventory_items(selected_ids)
         await state.clear()
         await callback.answer(f"✅ Удалено {len(selected_ids)} предм.")
+
+        if deleted_items:
+            _tuser = db.get_user(target_user_id)
+            _items_str = ", ".join(f"{n} x{q}" for n, q in deleted_items)
+            await log_inventory_remove(
+                callback.bot,
+                admin_id=callback.from_user.id,
+                admin_name=callback.from_user.full_name,
+                user_id=target_user_id,
+                user_name=(_tuser or {}).get("roblox_nick") or (_tuser or {}).get("username") or str(target_user_id),
+                item_name=_items_str,
+                quantity=sum(q for _, q in deleted_items),
+            )
+
         await _show_admin_user_inventory(callback, target_user_id, edit=True)
         return
 
@@ -1517,10 +1644,14 @@ async def admin_delete_qty_receive(message: Message, state: FSMContext):
 
 # ========== ПЕРЕДАЧА ПРЕДМЕТОВ АДМИНИСТРАТОРОМ ==========
 
-def _build_admin_transfer_keyboard(items: list, selected_ids: List[int], source_user_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура выбора предметов для передачи."""
+def _build_admin_transfer_keyboard(items: list, selected_ids: List[int], source_user_id: int, page: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура выбора предметов для передачи с пагинацией."""
+    total_pages = max(1, (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    page_items = items[page * ITEMS_PER_PAGE: (page + 1) * ITEMS_PER_PAGE]
+
     keyboard = []
-    for item in items:
+    for item in page_items:
         item_id = item["id"]
         checked = item_id in selected_ids
         mark = "✅" if checked else "☑️"
@@ -1531,6 +1662,17 @@ def _build_admin_transfer_keyboard(items: list, selected_ids: List[int], source_
                 callback_data=f"inv_adm_tr_tog_{item_id}_{source_user_id}"
             )
         ])
+
+    # Пагинация
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"inv_adm_tr_pg_{source_user_id}_{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="inv_adm_tr_pg_noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton(text="➡️", callback_data=f"inv_adm_tr_pg_{source_user_id}_{page + 1}"))
+        keyboard.append(nav)
+
     keyboard.append([
         InlineKeyboardButton(text="✔️ Выбрать все", callback_data=f"inv_adm_tr_all_{source_user_id}"),
         InlineKeyboardButton(text="🔙 Назад", callback_data=f"inv_adm_view_{source_user_id}"),
@@ -1556,12 +1698,12 @@ async def admin_enter_transfer_mode(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.set_state(AdminInventoryStates.transfer_selecting)
-    await state.update_data(transfer_selected_ids=[], transfer_source_user_id=source_user_id)
+    await state.update_data(transfer_selected_ids=[], transfer_source_user_id=source_user_id, tr_page=0)
 
     user = db.get_user(source_user_id)
     user_display = _user_display(user)
 
-    keyboard = _build_admin_transfer_keyboard(items, [], source_user_id)
+    keyboard = _build_admin_transfer_keyboard(items, [], source_user_id, page=0)
     await callback.message.edit_text(
         f"📤 <b>Передача предметов из инвентаря {user_display}</b>\n\n"
         f"Выберите предметы для передачи:",
@@ -1584,6 +1726,7 @@ async def admin_transfer_toggle_item(callback: CallbackQuery, state: FSMContext)
 
     data = await state.get_data()
     selected_ids: List[int] = data.get("transfer_selected_ids", [])
+    tr_page: int = data.get("tr_page", 0)
 
     if item_id in selected_ids:
         selected_ids.remove(item_id)
@@ -1592,7 +1735,7 @@ async def admin_transfer_toggle_item(callback: CallbackQuery, state: FSMContext)
 
     await state.update_data(transfer_selected_ids=selected_ids)
     items = db.get_user_inventory(source_user_id)
-    keyboard = _build_admin_transfer_keyboard(items, selected_ids, source_user_id)
+    keyboard = _build_admin_transfer_keyboard(items, selected_ids, source_user_id, page=tr_page)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
     await callback.answer()
 
@@ -1608,12 +1751,34 @@ async def admin_transfer_select_all(callback: CallbackQuery, state: FSMContext):
     items = db.get_user_inventory(source_user_id)
     data = await state.get_data()
     selected_ids: List[int] = data.get("transfer_selected_ids", [])
+    tr_page: int = data.get("tr_page", 0)
     all_ids = [item["id"] for item in items]
 
     selected_ids = [] if set(selected_ids) == set(all_ids) else all_ids
     await state.update_data(transfer_selected_ids=selected_ids)
 
-    keyboard = _build_admin_transfer_keyboard(items, selected_ids, source_user_id)
+    keyboard = _build_admin_transfer_keyboard(items, selected_ids, source_user_id, page=tr_page)
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("inv_adm_tr_pg_"), AdminInventoryStates.transfer_selecting)
+async def admin_transfer_page(callback: CallbackQuery, state: FSMContext):
+    """Листание страниц в режиме передачи."""
+    if callback.data == "inv_adm_tr_pg_noop":
+        await callback.answer()
+        return
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав", show_alert=True)
+        return
+    parts = callback.data.split("_")
+    source_user_id = int(parts[4])
+    page = int(parts[5])
+    data = await state.get_data()
+    selected_ids: List[int] = data.get("transfer_selected_ids", [])
+    await state.update_data(tr_page=page)
+    items = db.get_user_inventory(source_user_id)
+    keyboard = _build_admin_transfer_keyboard(items, selected_ids, source_user_id, page=page)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
     await callback.answer()
 
@@ -2322,7 +2487,7 @@ async def admin_food_qty_receive(message: Message, state: FSMContext):
         )
     # Уведомляем пользователя
     if user_lang == "RUS":
-        notif_lang = (db.get_user(user_id) or {}).get("language", "RUS")
+        notif_lang = (db.get_user(target_user_id) or {}).get("language", "RUS")
         notif_lc = "ru" if notif_lang == "RUS" else "en"
         notif = locale_manager.get_text(notif_lc, "inventory.food_added_notification").format(summary=summary)
     else:

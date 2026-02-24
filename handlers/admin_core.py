@@ -356,7 +356,8 @@ async def admin_search_receive(message: Message, state: FSMContext):
         return
 
     if not query:
-        await message.answer("❌ Введите запрос для поиска.")
+        await state.clear()
+        await message.answer("❌ Введите текстовый запрос для поиска.")
         return
 
     all_users = db.get_all_users()

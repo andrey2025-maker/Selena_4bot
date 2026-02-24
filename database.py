@@ -676,7 +676,9 @@ class Database:
 
     def get_user_inventory(self, user_id: int) -> List[Dict]:
         """Получение всех предметов инвентаря пользователя.
-        Порядок: сначала item, потом food, потом pet."""
+        Порядок: item → food → pet.
+        Петы сортируются: сначала по мутации (редкие → обычные),
+        внутри мутации — по доходу убывая."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -688,6 +690,25 @@ class Database:
                         WHEN 'pet'  THEN 3
                         ELSE 4
                     END,
+                    CASE WHEN item_type = 'pet' THEN
+                        CASE pet_mutation
+                            WHEN 'valentine' THEN 1
+                            WHEN 'xmas'      THEN 2
+                            WHEN 'thanks'    THEN 3
+                            WHEN 'halloween' THEN 4
+                            WHEN 'snowy'     THEN 5
+                            WHEN 'jurassic'  THEN 6
+                            WHEN 'fiery'     THEN 7
+                            WHEN 'electric'  THEN 8
+                            WHEN 'diamond'   THEN 9
+                            WHEN 'golden'    THEN 10
+                            WHEN 'normal'    THEN 11
+                            ELSE 12
+                        END
+                    ELSE 0 END ASC,
+                    CASE WHEN item_type = 'pet' THEN
+                        CAST(REPLACE(REPLACE(COALESCE(pet_income, '0'), ' ', ''), ',', '') AS INTEGER)
+                    ELSE 0 END DESC,
                     created_at ASC
             ''', (user_id,))
             return [dict(row) for row in cursor.fetchall()]
@@ -1607,7 +1628,7 @@ class Database:
             # 4. giveaways — завершённые розыгрыши (каскадно удалит prizes и participants)
             cursor.execute('''
                 DELETE FROM giveaways
-                WHERE status IN ('ended', 'cancelled')
+                WHERE status IN ('ended', 'cancelled', 'finished')
                   AND ended_at < datetime('now', ? || ' days')
             ''', (f'-{days}',))
             result['giveaways'] = cursor.rowcount

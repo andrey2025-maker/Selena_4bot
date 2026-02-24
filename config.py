@@ -171,8 +171,11 @@ class Config:
     LOG_GROUP_ID = int(os.getenv("LOG_GROUP_ID", 0)) if os.getenv("LOG_GROUP_ID", "").strip() else 0
 
     # ID групп-администраторов: если написать !инв анонимно от имени группы — работает как команда от админа.
-    # Задаётся через .env: ADMIN_GROUP_IDS=-1001234567890,-1009876543210
+    # По умолчанию берётся REQUIRED_GROUP_ID. Можно переопределить через ADMIN_GROUP_IDS в .env.
     _admin_groups_raw = os.getenv("ADMIN_GROUP_IDS", "").strip()
-    ADMIN_GROUP_IDS: list[int] = [
-        int(x.strip()) for x in _admin_groups_raw.split(",") if x.strip()
-    ]
+    if _admin_groups_raw:
+        ADMIN_GROUP_IDS: list[int] = [
+            int(x.strip()) for x in _admin_groups_raw.split(",") if x.strip()
+        ]
+    else:
+        ADMIN_GROUP_IDS: list[int] = [int(os.getenv("REQUIRED_GROUP_ID", -1002927295087))]

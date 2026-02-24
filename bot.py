@@ -13,6 +13,7 @@ from config import Config
 from database import Database
 from utils.subscription import daily_subscription_check
 from handlers.start import get_user_language
+from utils.log_events import log_item_trade_cancel
 
 # Настройка логирования
 logging.basicConfig(
@@ -255,6 +256,22 @@ async def stale_trades_cleanup_task(bot: Bot, db_instance: Database):
                     f"(участники: {initiator_id}, {partner_id})"
                 )
 
+                # Лог в Telegram
+                try:
+                    init_user = db_instance.get_user(initiator_id)
+                    part_user = db_instance.get_user(partner_id)
+                    init_name = (init_user or {}).get("username") or str(initiator_id)
+                    part_name = (part_user or {}).get("username") or str(partner_id)
+                    await log_item_trade_cancel(
+                        bot,
+                        cancelled_by_id=0,
+                        cancelled_by_name="⏰ Авто (таймаут 30 мин)",
+                        other_id=initiator_id,
+                        other_name=f"{init_name} & {part_name}",
+                    )
+                except Exception as e:
+                    logger.warning(f"Не удалось записать лог отмены обмена #{trade_id}: {e}")
+
                 # Уведомляем обоих участников
                 for uid in (initiator_id, partner_id):
                     try:
@@ -370,8 +387,8 @@ async def main():
         asyncio.create_task(giveaway_timer_task(bot))
         logger.info("✅ Таймер розыгрышей запущен")
 
-        asyncio.create_task(refresh_keyboards_task(bot, db))
-        logger.info("✅ Обновление клавиатур запущено")
+        # refresh_keyboards_task отключён — рассылка клавиатуры только по команде /кнопки
+        # asyncio.create_task(refresh_keyboards_task(bot, db))
 
         asyncio.create_task(auto_cleanup_task(db))
         logger.info("✅ Автоочистка БД запущена (ежедневно в 04:00)")
