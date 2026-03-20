@@ -19,6 +19,14 @@ from utils.filters import MessageFilter
 logger = logging.getLogger(__name__)
 db = Database()
 
+# Статусы участника, при которых считаем подписку активной.
+# restricted = участник в группе с ограничениями (в т.ч. скрытый список участников).
+SUBSCRIBED_STATUSES = ("member", "administrator", "creator", "restricted")
+
+def _normalize_member_status(status) -> str:
+    """Приводит status к строке (поддержка enum и строки)."""
+    return (getattr(status, "value", None) or str(status)).lower()
+
 async def check_user_subscription(
     user_id: int, 
     group_id: int, 
@@ -43,11 +51,12 @@ async def check_user_subscription(
     
     try:
         chat_member = await bot.get_chat_member(group_id, user_id)
-        is_subscribed = chat_member.status in ["member", "administrator", "creator"]
-        
+        status = _normalize_member_status(chat_member.status)
+        is_subscribed = status in SUBSCRIBED_STATUSES
+
         # Обновляем статус в БД
         db.update_subscription(user_id, is_subscribed)
-        
+
         # Обновляем username если он изменился или появился
         if hasattr(chat_member, "user") and chat_member.user:
             new_username = chat_member.user.username
@@ -55,22 +64,27 @@ async def check_user_subscription(
             if current_user and current_user.get("username") != new_username:
                 db.update_username(user_id, new_username)
                 logger.info(f"Updated username for {user_id}: {new_username}")
-        
+
         return is_subscribed
     except TelegramForbiddenError:
         logger.warning(f"Bot blocked by user {user_id}")
         db.update_subscription(user_id, False)
         return False
     except TelegramBadRequest as e:
-        if "chat not found" in str(e).lower():
+        err_msg = str(e).lower()
+        if "chat not found" in err_msg:
             logger.error(f"Group {group_id} not found or bot is not a member")
-        else:
-            logger.error(f"Error checking subscription for {user_id}: {e}")
-        db.update_subscription(user_id, False)
+            # Не обновляем БД — при временной недоступности группы не сбрасываем подписку
+            return False
+        if "user not found" in err_msg or "not found" in err_msg or "user_not_participant" in err_msg:
+            db.update_subscription(user_id, False)
+            return False
+        logger.error(f"Error checking subscription for {user_id}: {e}")
+        # Прочие BadRequest — не сбрасываем подписку (сетевые/временные ошибки)
         return False
     except Exception as e:
         logger.error(f"Unexpected error checking subscription for {user_id}: {e}")
-        db.update_subscription(user_id, False)
+        # Не обновляем БД при неожиданных ошибках (сеть, таймаут и т.д.)
         return False
 
 async def send_notification(

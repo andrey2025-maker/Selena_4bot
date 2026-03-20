@@ -65,9 +65,44 @@ def _pet_line(num: int, pet: dict, highlight: bool = False) -> str:
 
     user_link = f'<a href="tg://user?id={user_id}">{user_id}</a>'
     roblox_part = roblox if roblox else "нет"
+    pet_uid = pet.get("pet_uid")
+    uid_part = f" — ID: {pet_uid}" if pet_uid else ""
 
     prefix = "➡ " if highlight else ""
-    return f"{prefix}{num}. {name} — {user_link} — {roblox_part}"
+    return f"{prefix}{num}. {name} — {user_link} — {roblox_part}{uid_part}"
+
+
+@router.message(F.text.regexp(r'(?i)^!петid\\s+\\S+'))
+async def cmd_find_pet_by_id(message: Message):
+    """!петid <ID> — найти пета по внутреннему ID (pet_uid)."""
+    if not _caller_is_admin(message):
+        return
+
+    raw = message.text.strip().split(maxsplit=1)
+    if len(raw) < 2:
+        await message.answer("❌ Укажите ID пета. Пример: <code>!петid 123</code>", parse_mode="HTML")
+        return
+    uid = raw[1].strip()
+
+    pets = db.get_pets_by_uid(uid)
+    if not pets:
+        await message.answer(f"❌ Пет с ID <code>{uid}</code> не найден.", parse_mode="HTML")
+        return
+
+    lines = []
+    for i, pet in enumerate(pets, 1):
+        name = pet.get("name") or "?"
+        user_id = pet.get("user_id")
+        roblox = db.get_roblox_nick(user_id) if user_id else None
+        user_link = f'<a href="tg://user?id={user_id}">{user_id}</a>'
+        roblox_part = roblox if roblox else "нет"
+        lines.append(f"{i}. {name} — {user_link} — {roblox_part}")
+
+    header = f"🐾 <b>Поиск по ID пета {uid}</b>\nНайдено совпадений: {len(pets)}"
+    if len(pets) > 1:
+        header += "\n⚠️ <b>Внимание:</b> найдено несколько одинаковых ID — возможный дюп!"
+
+    await message.answer(header + "\n\n" + "\n".join(lines), parse_mode="HTML")
 
 
 def _build_pets_keyboard(page: int, total: int, search_value: Optional[int] = None) -> InlineKeyboardMarkup:
@@ -163,8 +198,10 @@ async def pets_search_hint(callback: CallbackQuery):
         await callback.answer("⛔ Нет прав", show_alert=True)
         return
     await callback.answer(
-        "Используйте команду:\n!пет <число>\nПример: !пет 141685",
-        show_alert=True
+        "Используйте команды:\n"
+        "!пет <доход> — поиск по доходу\n"
+        "!петid <ID> — поиск по внутреннему ID пета",
+        show_alert=True,
     )
 
 

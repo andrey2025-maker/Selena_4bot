@@ -79,6 +79,7 @@ class Database:
                     pet_mutation TEXT,
                     pet_weather TEXT,
                     pet_coeff TEXT,
+                    pet_uid TEXT,
                     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
             ''')
@@ -89,6 +90,7 @@ class Database:
                 ("pet_mutation", "TEXT"),
                 ("pet_weather", "TEXT"),
                 ("pet_coeff", "TEXT"),
+                ("pet_uid", "TEXT"),
             ]:
                 try:
                     cursor.execute(f'ALTER TABLE inventory_items ADD COLUMN {col} {definition}')
@@ -645,8 +647,21 @@ class Database:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (user_id, item_type, name, description, media_file_id, media_type,
                       quantity, added_by, pet_income, pet_mutation, pet_weather, pet_coeff))
-                conn.commit()
                 item_id = cursor.lastrowid
+
+                # Для пета создаём стабильный внутренний идентификатор (pet_uid),
+                # который не меняется при обменах и переносах.
+                if item_type == 'pet' and item_id:
+                    pet_uid = str(item_id)
+                    try:
+                        cursor.execute(
+                            'UPDATE inventory_items SET pet_uid=? WHERE id=?',
+                            (pet_uid, item_id)
+                        )
+                    except Exception as e:
+                        logger.error(f"Error setting pet_uid for pet {item_id}: {e}")
+
+                conn.commit()
                 logger.info(f"Inventory item {item_id} ({item_type}) added for user {user_id} by admin {added_by}")
                 return item_id
             except Exception as e:
@@ -1438,9 +1453,9 @@ class Database:
                         cursor.execute('''
                             INSERT INTO inventory_items
                                 (user_id, item_type, name, description, media_file_id, media_type,
-                                 quantity, added_by, pet_income, pet_mutation, pet_weather, pet_coeff)
+                                 quantity, added_by, pet_income, pet_mutation, pet_weather, pet_coeff, pet_uid)
                             SELECT ?, item_type, name, description, media_file_id, media_type,
-                                   ?, user_id, pet_income, pet_mutation, pet_weather, pet_coeff
+                                   ?, user_id, pet_income, pet_mutation, pet_weather, pet_coeff, pet_uid
                             FROM inventory_items WHERE id=?
                         ''', (to_uid, qty, iid))
 
@@ -1539,6 +1554,23 @@ class Database:
                     CAST(REPLACE(REPLACE(ii.pet_income, ' ', ''), ',', '') AS REAL) DESC,
                     ii.created_at ASC
             ''')
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_pets_by_uid(self, pet_uid: str) -> List[Dict]:
+        """Найти всех петов по внутреннему идентификатору pet_uid.
+        В нормальной ситуации должен быть ровно один результат.
+        Если найдено больше — это признак возможного дюпа."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT ii.*, u.username
+                FROM inventory_items ii
+                LEFT JOIN users u ON ii.user_id = u.user_id
+                WHERE ii.item_type = 'pet' AND ii.pet_uid = ?
+                ''',
+                (pet_uid,),
+            )
             return [dict(r) for r in cursor.fetchall()]
 
     def search_pet_by_income(self, income_value: int) -> dict:

@@ -386,6 +386,8 @@ async def finish_giveaway(bot: Bot, giveaway_id: int):
                     # Логируем добавление пета; для фото — получаем стабильный file_id из лог-группы
                     winner_user = db.get_user(uid)
                     winner_name = (winner_user or {}).get("username") or str(uid)
+                    pet_row = db.get_inventory_item(new_item_id) if new_item_id else None
+                    pet_uid = (pet_row or {}).get("pet_uid")
                     stable_fid = await log_inventory_add(
                         bot,
                         admin_id=0,
@@ -396,6 +398,7 @@ async def finish_giveaway(bot: Bot, giveaway_id: int):
                         item_name=prize["name"],
                         media_file_id=pet_media_fid,
                         media_type=pet_media_type,
+                        pet_uid=str(pet_uid) if pet_uid else None,
                     )
                     # Если фото переслано в лог-группу — обновляем стабильный file_id в БД
                     if stable_fid and new_item_id:

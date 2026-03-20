@@ -2688,6 +2688,8 @@ async def _save_pet_to_db(message_or_callback, state: FSMContext,
 
     user_display = _user_display(user)
     if item_id:
+        pet_row = db.get_inventory_item(item_id) or {}
+        pet_uid = pet_row.get("pet_uid")
         await answer(
             f"✅ Пет добавлен в инвентарь {user_display}:\n<b>{full_name}</b>" if lang == "RUS" else
             f"✅ Pet added to {user_display}'s inventory:\n<b>{full_name}</b>",
@@ -2705,6 +2707,7 @@ async def _save_pet_to_db(message_or_callback, state: FSMContext,
             item_name=full_name,
             media_file_id=media_file_id,
             media_type=media_type,
+            pet_uid=str(pet_uid) if pet_uid else None,
         )
         # Если лог-группа вернула стабильный file_id — обновляем запись в БД
         if stable_file_id and stable_file_id != media_file_id:

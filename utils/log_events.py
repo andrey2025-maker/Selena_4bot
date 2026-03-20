@@ -74,6 +74,7 @@ async def log_inventory_add(
     quantity: int = 1,
     media_file_id: str = None,
     media_type: str = None,
+    pet_uid: str | None = None,
 ) -> Optional[str]:
     """Залогировать добавление предмета в инвентарь.
     Для петов с фото — отправляет фото в лог-группу и возвращает стабильный
@@ -85,8 +86,10 @@ async def log_inventory_add(
         f"👤 Пользователь: {_user_link(user_id, user_name)}\n"
         f"🧑‍💼 Администратор: {_user_link(admin_id, admin_name, is_admin=True)}\n"
         f"{type_emoji} Предмет: <b>{item_name}</b>{qty_str}\n"
-        f"🕐 {_now()}"
     )
+    if item_type == "pet" and pet_uid:
+        text += f"🆔 ID пета: <code>{pet_uid}</code>\n"
+    text += f"🕐 {_now()}"
 
     # Для пета с фото — отправляем фото с подписью, получаем стабильный file_id
     if item_type == "pet" and media_file_id and media_type == "photo":
