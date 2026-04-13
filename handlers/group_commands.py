@@ -55,58 +55,63 @@ def _caller_is_admin(message: Message) -> bool:
 MUTATIONS = {
     "⚪️": {
         "name_ru": "Обычная",       "name_en": "Normal",
-        "percentages": [100, 200, 300, 400],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [100, 200, 300, 300, 400],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "🟡": {
         "name_ru": "Золотая",       "name_en": "Golden",
-        "percentages": [50, 75, 100, 125],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [50, 75, 100, 100, 125],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "💎": {
         "name_ru": "Алмазная",      "name_en": "Diamond",
-        "percentages": [40, 60, 80, 100],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [40, 60, 80, 80, 100],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "⚡️": {
         "name_ru": "Электрическая", "name_en": "Electric",
-        "percentages": [25, 37.5, 50, 62.5],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [25, 37.5, 50, 50, 62.5],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "🔥": {
         "name_ru": "Огненная",      "name_en": "Fiery",
-        "percentages": [20, 30, 40, 50],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [20, 30, 40, 40, 50],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "🦖": {
         "name_ru": "Юрская",        "name_en": "Jurassic",
-        "percentages": [16.67, 25, 33.33, 41.67],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [16.67, 25, 33.33, 33.33, 41.67],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "❄️": {
         "name_ru": "Снежная",       "name_en": "Snowy",
-        "percentages": [16.67, 25, 33.33, 41.67],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [16.67, 25, 33.33, 33.33, 41.67],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "🎃": {
         "name_ru": "Хэллуин",       "name_en": "Halloween",
-        "percentages": [15.38, 23.08, 30.78, 38.46],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [15.38, 23.08, 30.78, 30.78, 38.46],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "🦃": {
         "name_ru": "Благодарения",  "name_en": "Thanksgiving",
-        "percentages": [14.81, 22.22, 29.63, 37.04],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [14.81, 22.22, 29.63, 29.63, 37.04],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "🎄": {
         "name_ru": "Рождество",     "name_en": "Christmas",
-        "percentages": [13.33, 20, 26.67, 33.33],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "percentages": [13.33, 20, 26.67, 26.67, 33.33],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
     "🌸🩷": {
         "name_ru": "День Валентина","name_en": "Valentine's Day",
         "percentages": [12.49, 18.75, 25, 31.24],
-        "weather_keys": ["storm", "aurora", "volcano", "admin"],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
+    },
+    "🧁": {
+        "name_ru": "Крем","name_en": "Cream",
+        "percentages": [11.76, 17.65, 23.53, 23.53, 29.41],
+        "weather_keys": ["storm", "aurora", "volcano", "blossom", "admin"],
     },
 }
 
@@ -115,6 +120,7 @@ WEATHER = {
     "storm":   {"ru": "Буря",    "en": "Storm",   "emoji": "💨"},
     "aurora":  {"ru": "Аврора",  "en": "Aurora",  "emoji": "🌀"},
     "volcano": {"ru": "Вулкан",  "en": "Volcano", "emoji": "🌋"},
+    "blossom": {"ru": "Цветение", "en": "Blossom", "emoji": "🌸"},
     "admin":   {"ru": "Админ",   "en": "Admin",   "emoji": "🪯"},
 }
 
@@ -725,3 +731,25 @@ async def hide_keyboard(message: Message):
         "⌨️ Клавиатура скрыта",
         reply_markup=ReplyKeyboardRemove()
     )
+
+@router.message(Command("promo"))
+async def promo(message: Message):
+    """Показывать промокоды"""
+    
+    promo_text = (
+        "🔥 <b>Собрали для вас все промокоды!</b> 🔥\n\n"
+        "💥 За промокоды можно получить: 🥚 Яйца, 🍔 Еду, 🕒 Часы, 🎟️ Билеты для рулетки!\n\n"
+        "<code>Nyaa</code>\n\n"
+        "<code>subtoZRGZeRoGhost</code>\n\n"
+        "<code>druscxlla</code>\n\n"
+        "<code>3XKK8Z2WB6G</code>\n\n"
+        "<code>N7A68Q82H83</code>\n\n"
+        "<code>4XW5RG4CHRY</code>\n\n"
+        "<code>BUNNYHOPSURPRISE</code>\n\n"
+        "<code>EASTERBASKET</code>\n\n"
+        "<code>LOVEISINTHEAIR</code>\n\n"
+        "<code>CUPIDSDAY2026</code>\n\n"
+        "⚠️ <b>Важно:</b> Использовать можно только один раз на каждом аккаунте, не пропустите награды!"
+    )
+    
+    await message.answer(promo_text, parse_mode="HTML")
