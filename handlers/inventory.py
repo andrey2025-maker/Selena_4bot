@@ -73,6 +73,7 @@ PET_MUTATIONS = [
     ("thanks",    "🦃", "Благодарения",   "Thanksgiving"),
     ("xmas",      "🎄", "Рождество",      "Christmas"),
     ("valentine", "🌸🩷","День Валентина","Valentine's Day"),
+    ("cream", "🧁","Крем","Cream"),
 ]
 PET_MUT_BY_KEY = {m[0]: m for m in PET_MUTATIONS}
 
@@ -81,6 +82,7 @@ PET_WEATHERS = [
     ("storm",   "💨", "Буря",   "Storm"),
     ("aurora",  "🌀", "Аврора", "Aurora"),
     ("volcano", "🌋", "Вулкан", "Volcano"),
+    ("blossom", "🌸", "Цветение", "Blossom"),
     ("admin",   "🪯", "Админ",  "Admin"),
 ]
 PET_WEATHER_BY_KEY = {w[0]: w for w in PET_WEATHERS}
